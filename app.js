@@ -36,8 +36,10 @@ function renderPlayerNames() {
     lbl.querySelector('input').addEventListener('input', renderStarterButtons);
   }
   const maxC = maxCardsFor(n);
-  $('setup-start').max = maxC;
-  if (parseInt($('setup-start').value, 10) > maxC) $('setup-start').value = maxC;
+  const startInp = $('setup-start');
+  startInp.max = maxC;
+  // Default to max whenever player count changes, unless user has manually edited
+  if (!startInp.dataset.userSet || parseInt(startInp.value, 10) > maxC) startInp.value = maxC;
   $('setup-max-note').textContent = `Max for ${n} players: ${maxC}`;
   if (setupSelectedStarter !== 'random' && setupSelectedStarter >= n) setupSelectedStarter = 'random';
   renderStarterButtons();
