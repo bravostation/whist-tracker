@@ -708,12 +708,54 @@ function renderSummary(game) {
   renderPositionStats(game);
   renderPlayerDetail(game);
   renderBidNumberStats(game);
+  // Reset full-table toggle
+  const ftw = $('full-table-wrap');
+  if (ftw) ftw.classList.add('hidden');
+  const ftb = $('view-fulltable-btn');
+  if (ftb) ftb.textContent = '📊 Full game table';
 }
 
 function longestRun(arr, val) {
   let best = 0, cur = 0;
   for (const v of arr) { if (v === val) { cur++; if (cur > best) best = cur; } else cur = 0; }
   return best;
+}
+
+function renderFullGameTable(game) {
+  const N = game.players.length;
+  let header = '<tr><th class="round-cell">Round</th>';
+  game.players.forEach(p => header += `<th>${escapeHtml(p)}</th>`);
+  header += '</tr>';
+  let html = '<thead>' + header + '</thead><tbody>';
+  game.history.forEach((r, ri) => {
+    const tr = SUITS.find(s => s.name === r.trump);
+    const dealer = ((game.firstDealer || 0) + ri) % N;
+    const bidSum = r.bids.reduce((a, b) => a + b, 0);
+    const diff = bidSum - r.cards;
+    const diffCls = diff > 0 ? 'over' : (diff < 0 ? 'under' : '');
+    const diffStr = diff === 0 ? '=cards' : (diff > 0 ? `+${diff}` : `${diff}`);
+    html += `<tr><td class="round-cell">
+      <div><span class="cards-num">${r.cards}</span><span class="trump-sym ${tr.cls}">${tr.sym}</span></div>
+      <small>R${ri + 1}</small>
+      <span class="round-bidsum ${diffCls}">bids ${bidSum} (${diffStr})</span>
+    </td>`;
+    game.players.forEach((p, pi) => {
+      const ok = r.bids[pi] === r.actuals[pi];
+      const isDealer = pi === dealer;
+      const dStr = (r.deltas[pi] >= 0 ? '+' : '') + r.deltas[pi];
+      html += `<td class="${isDealer ? 'dealer-col' : ''}">
+        <div class="cell-stack">
+          <span class="bid-with-delta">
+            <span class="bid-result ${ok ? 'bid-correct' : 'bid-miss'}">${r.bids[pi]}</span><sup class="delta-sup ${r.deltas[pi] >= 0 ? 'pos' : 'neg'}">${dStr}</sup>
+          </span>
+          <span class="cell-total">${r.totals[pi]}</span>
+        </div>
+      </td>`;
+    });
+    html += '</tr>';
+  });
+  html += '</tbody><tfoot>' + header.replace(/<th /g, '<td ').replace(/<\/th>/g, '</td>') + '</tfoot>';
+  $('summary-full-table').innerHTML = html;
 }
 
 function renderPlayerDetail(game) {
@@ -1122,6 +1164,19 @@ function init() {
     showView('setup');
   });
   $('view-history-btn').addEventListener('click', () => { renderHistory(); showView('history'); });
+  $('view-fulltable-btn').addEventListener('click', () => {
+    const wrap = $('full-table-wrap');
+    const hidden = wrap.classList.contains('hidden');
+    if (hidden) {
+      renderFullGameTable(state);
+      wrap.classList.remove('hidden');
+      $('view-fulltable-btn').textContent = '📊 Hide full table';
+      wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else {
+      wrap.classList.add('hidden');
+      $('view-fulltable-btn').textContent = '📊 Full game table';
+    }
+  });
   $('nav-new').addEventListener('click', () => {
     if (state && state.history && state.currentRound < state.rounds.length && !viewingShared) {
       if (!confirm('Abandon current game?')) return;
