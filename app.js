@@ -993,7 +993,58 @@ function computeStats(game) {
 
 // -------- Share --------
 async function copyShareLink() {
-  if (!state) return;
+  const url = buildShareUrl();
+  if (!url) return;
+  await writeClip(url, '✓ Link copied!');
+}
+
+async function copyShortShareLink() {
+  const url = buildShareUrl();
+  if (!url) return;
+  const status = $('share-status');
+  if (status) status.textContent = 'Shortening…';
+  try {
+    const short = await shortenUrl(url);
+    await writeClip(short, '✓ Short link copied: ' + short);
+  } catch (e) {
+    if (status) status.textContent = '⚠️ Shortener failed, copied full link';
+    await writeClip(url, '');
+  }
+}
+
+async function shortenUrl(longUrl) {
+  // Try is.gd first (CORS-friendly, no key)
+  try {
+    const r = await fetch('https://is.gd/create.php?format=simple&url=' + encodeURIComponent(longUrl));
+    if (r.ok) {
+      const t = (await r.text()).trim();
+      if (/^https?:\/\//i.test(t)) return t;
+    }
+  } catch {}
+  // Fallback: TinyURL
+  try {
+    const r = await fetch('https://tinyurl.com/api-create.php?url=' + encodeURIComponent(longUrl));
+    if (r.ok) {
+      const t = (await r.text()).trim();
+      if (/^https?:\/\//i.test(t)) return t;
+    }
+  } catch {}
+  throw new Error('no shortener available');
+}
+
+async function writeClip(text, successMsg) {
+  const status = $('share-status');
+  try {
+    await navigator.clipboard.writeText(text);
+    if (status) { status.textContent = successMsg || ''; setTimeout(() => { status.textContent = ''; }, 4000); }
+    else if (successMsg) alert(successMsg);
+  } catch {
+    prompt('Copy this link:', text);
+  }
+}
+
+function buildShareUrl() {
+  if (!state) return null;
   const slim = {
     v: 1,
     p: state.players,
@@ -1007,15 +1058,7 @@ async function copyShareLink() {
   const json = JSON.stringify(slim);
   const b64 = btoa(unescape(encodeURIComponent(json)))
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  const url = `${location.origin}${location.pathname}#g=${b64}`;
-  const status = $('share-status');
-  try {
-    await navigator.clipboard.writeText(url);
-    if (status) { status.textContent = '✓ Link copied!'; setTimeout(() => { status.textContent = ''; }, 3000); }
-    else alert('✓ Shareable link copied to clipboard');
-  } catch {
-    prompt('Copy this link:', url);
-  }
+  return `${location.origin}${location.pathname}#g=${b64}`;
 }
 
 function importSharedGame() {
@@ -1155,6 +1198,7 @@ function init() {
     if (e.key === 'Enter') { e.preventDefault(); modalNext(); }
   });
   $('share-game-btn').addEventListener('click', copyShareLink);
+  $('share-short-btn').addEventListener('click', copyShortShareLink);
   $('share-mid-btn').addEventListener('click', copyShareLink);
   $('import-shared-btn').addEventListener('click', importSharedGame);
 
