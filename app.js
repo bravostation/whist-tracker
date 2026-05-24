@@ -1200,6 +1200,7 @@ function init() {
   $('share-game-btn').addEventListener('click', copyShareLink);
   $('share-short-btn').addEventListener('click', copyShortShareLink);
   $('share-mid-btn').addEventListener('click', copyShareLink);
+  $('share-mid-short-btn').addEventListener('click', copyShortShareLink);
   $('import-shared-btn').addEventListener('click', importSharedGame);
 
   $('play-again').addEventListener('click', () => {
