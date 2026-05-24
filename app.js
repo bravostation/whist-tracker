@@ -171,10 +171,12 @@ function renderGame() {
     state.players.forEach((p, pi) => {
       const ok = r.bids[pi] === r.actuals[pi];
       const isDealer = pi === rDealer;
+      const dStr = (r.deltas[pi] >= 0 ? '+' : '') + r.deltas[pi];
       html += `<td class="${isDealer ? 'dealer-col' : ''}">
         <div class="cell-stack">
-          <span class="bid-result ${ok ? 'bid-correct' : 'bid-miss'}">${r.bids[pi]}</span>
-          <span class="cell-delta ${r.deltas[pi] >= 0 ? 'pos' : 'neg'}">→${r.actuals[pi]} (${r.deltas[pi] >= 0 ? '+' : ''}${r.deltas[pi]})</span>
+          <span class="bid-with-delta">
+            <span class="bid-result ${ok ? 'bid-correct' : 'bid-miss'}">${r.bids[pi]}</span><sup class="delta-sup ${r.deltas[pi] >= 0 ? 'pos' : 'neg'}">${dStr}</sup>
+          </span>
           <span class="cell-total">${r.totals[pi]}</span>
         </div>
       </td>`;
@@ -207,11 +209,13 @@ function renderGame() {
       const a = state.pendingActuals[pi];
       const delta = scoreFor(b, a);
       const ok = b === a;
+      const dStr = (delta >= 0 ? '+' : '') + delta;
       cell = `<div class="cell-stack">
-        <span class="bid-result ${ok ? 'bid-correct' : 'bid-miss'}">${b}</span>
+        <span class="bid-with-delta">
+          <span class="bid-result ${ok ? 'bid-correct' : 'bid-miss'}">${b}</span><sup class="delta-sup ${delta >= 0 ? 'pos' : 'neg'}">${dStr}</sup>
+        </span>
         <input type="number" inputmode="numeric" pattern="[0-9]*" class="cell-input" min="0" max="${cards}"
           value="${a}" data-actual="${pi}" />
-        <span class="cell-delta ${delta >= 0 ? 'pos' : 'neg'}">${delta >= 0 ? '+' : ''}${delta}</span>
         <span class="cell-total">${curTotals[pi] + delta}</span>
       </div>`;
     }

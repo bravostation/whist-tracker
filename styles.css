@@ -104,6 +104,11 @@ small { color: var(--muted); font-size: .75rem; }
   display: flex; flex-direction: column; align-items: center; gap: .2rem; min-height: 56px;
   justify-content: center;
 }
+.bid-with-delta { display: inline-flex; align-items: flex-start; gap: 1px; }
+.delta-sup { font-size: .7rem; font-weight: 700; line-height: 1; margin-top: -2px; }
+.delta-sup.pos { color: var(--accent); }
+.delta-sup.neg { color: var(--danger); }
+
 .cell-delta { font-size: .8rem; color: var(--muted); }
 .cell-delta.pos { color: var(--accent); }
 .cell-delta.neg { color: var(--danger); }
