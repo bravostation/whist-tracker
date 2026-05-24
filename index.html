@@ -22,11 +22,11 @@
     <div class="setup-grid">
       <label>
         Number of players
-        <input type="number" id="setup-players" min="2" max="7" value="4" />
+        <input type="number" id="setup-players" inputmode="numeric" pattern="[0-9]*" min="2" max="7" value="4" />
       </label>
       <label>
         Starting cards
-        <input type="number" id="setup-start" min="1" value="7" />
+        <input type="number" id="setup-start" inputmode="numeric" pattern="[0-9]*" min="1" value="7" />
         <small id="setup-max-note">Max for 4 players: 13</small>
       </label>
       <label>
@@ -37,7 +37,14 @@
         </select>
       </label>
     </div>
+    <p class="setup-hint">Enter players in seating order (clockwise). The dealer rotates after each round.</p>
     <div id="setup-names"></div>
+
+    <div class="starter-row">
+      <span class="starter-label">First dealer (deals round 1):</span>
+      <div id="starter-buttons"></div>
+    </div>
+
     <button id="start-game" class="primary">Start Game</button>
   </section>
 
@@ -50,34 +57,21 @@
           <span class="trump"><span class="trump-label">Trump:</span> <span id="trump-card">♠</span></span>
           <span class="cards"><span id="card-count">7</span> cards</span>
         </div>
+        <div class="dealer-info">Dealer: <b id="dealer-name">–</b> · Bids last</div>
       </div>
       <button id="end-game-btn" class="secondary">End Game</button>
     </div>
 
-    <table class="scoretable">
-      <thead>
-        <tr>
-          <th>Player</th>
-          <th>Bid</th>
-          <th>Got</th>
-          <th>Round</th>
-          <th>Total</th>
-        </tr>
-      </thead>
-      <tbody id="score-body"></tbody>
-    </table>
+    <div class="table-wrap">
+      <table class="scoretable" id="game-table"></table>
+    </div>
 
     <div class="bid-warning" id="bid-warning"></div>
 
     <div class="game-actions">
-      <button id="lock-bids" class="primary">Lock Bids</button>
+      <button id="lock-bids" class="primary">Lock Bids → Play</button>
       <button id="commit-round" class="primary hidden">Score Round</button>
-      <button id="undo-round" class="secondary">Undo Last Round</button>
-    </div>
-
-    <div class="rounds-log">
-      <h3>Rounds so far</h3>
-      <div id="log-body"></div>
+      <button id="undo-round" class="secondary">Undo</button>
     </div>
   </section>
 

@@ -1,6 +1,9 @@
 // Contract Whist Tracker
 // Scoring: +3 + bid if exact; -|actual - bid| if missed
 // Trumps cycle: ♠ ♥ ♣ ♦ NT
+// Dealer rotates: round R dealer = (firstDealerIdx + R) % N
+// Bidding order: player to LEFT of dealer bids first; dealer bids LAST.
+// Last bidder (dealer) is constrained: total bids must NOT equal cards.
 
 const SUITS = [
   { sym: '♠', name: 'Spades', cls: 'suit-black' },
@@ -11,12 +14,13 @@ const SUITS = [
 ];
 
 const STORAGE_KEY = 'whist_history_v1';
-const ACTIVE_KEY = 'whist_active_v1';
+const ACTIVE_KEY = 'whist_active_v2';
 
 const $ = (id) => document.getElementById(id);
 
-let state = null; // active game state
+let state = null;
 let chartInstance = null;
+let setupSelectedStarter = 'random'; // index or 'random'
 
 // -------- Setup view --------
 function maxCardsFor(players) { return Math.floor(52 / players); }
@@ -27,13 +31,45 @@ function renderPlayerNames() {
   wrap.innerHTML = '';
   for (let i = 0; i < n; i++) {
     const lbl = document.createElement('label');
-    lbl.innerHTML = `Player ${i + 1} name <input type="text" data-player="${i}" value="Player ${i + 1}" />`;
+    lbl.innerHTML = `Seat ${i + 1} <input type="text" data-player="${i}" value="Player ${i + 1}" />`;
     wrap.appendChild(lbl);
+    lbl.querySelector('input').addEventListener('input', renderStarterButtons);
   }
   const maxC = maxCardsFor(n);
   $('setup-start').max = maxC;
   if (parseInt($('setup-start').value, 10) > maxC) $('setup-start').value = maxC;
   $('setup-max-note').textContent = `Max for ${n} players: ${maxC}`;
+  if (setupSelectedStarter !== 'random' && setupSelectedStarter >= n) setupSelectedStarter = 'random';
+  renderStarterButtons();
+}
+
+function getSetupNames() {
+  const names = [];
+  document.querySelectorAll('#setup-names input').forEach((inp) => {
+    names.push((inp.value || `Player ${parseInt(inp.dataset.player) + 1}`).trim());
+  });
+  return names;
+}
+
+function renderStarterButtons() {
+  const n = parseInt($('setup-players').value, 10) || 4;
+  const names = getSetupNames();
+  const wrap = $('starter-buttons');
+  wrap.innerHTML = '';
+  for (let i = 0; i < n; i++) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'starter-btn' + (setupSelectedStarter === i ? ' selected' : '');
+    b.textContent = names[i] || `Player ${i + 1}`;
+    b.addEventListener('click', () => { setupSelectedStarter = i; renderStarterButtons(); });
+    wrap.appendChild(b);
+  }
+  const r = document.createElement('button');
+  r.type = 'button';
+  r.className = 'starter-btn random' + (setupSelectedStarter === 'random' ? ' selected' : '');
+  r.textContent = '🎲 Random';
+  r.addEventListener('click', () => { setupSelectedStarter = 'random'; renderStarterButtons(); });
+  wrap.appendChild(r);
 }
 
 function buildRoundsList(start, dir) {
@@ -44,13 +80,12 @@ function buildRoundsList(start, dir) {
 }
 
 function startGame() {
-  const players = [];
-  document.querySelectorAll('#setup-names input').forEach((inp) => {
-    players.push((inp.value || `Player ${parseInt(inp.dataset.player) + 1}`).trim());
-  });
+  const players = getSetupNames();
   const start = parseInt($('setup-start').value, 10);
   const dir = $('setup-direction').value;
   const rounds = buildRoundsList(start, dir);
+  let firstDealer = setupSelectedStarter;
+  if (firstDealer === 'random') firstDealer = Math.floor(Math.random() * players.length);
 
   state = {
     id: Date.now(),
@@ -58,12 +93,14 @@ function startGame() {
     players,
     startCards: start,
     direction: dir,
-    rounds, // array of card counts
+    rounds,
+    firstDealer,
     currentRound: 0,
     phase: 'bidding', // 'bidding' | 'playing'
-    history: [], // [{cards, trump, bids: [], actuals: [], deltas: [], totals: []}]
+    history: [],
     pendingBids: players.map(() => 0),
     pendingActuals: players.map(() => 0),
+    activeBidder: 0, // index within bidOrder array; first to bid = left of dealer
   };
   saveActive();
   showView('game');
@@ -72,10 +109,27 @@ function startGame() {
 
 // -------- Game view --------
 function trumpFor(roundIdx) { return SUITS[roundIdx % SUITS.length]; }
+function dealerForRound(roundIdx) { return (state.firstDealer + roundIdx) % state.players.length; }
+
+// Bid order for a round: player to LEFT of dealer first, dealer last.
+// In setup seat order, "left" = next index (i+1 mod N).
+function bidOrderForRound(roundIdx) {
+  const N = state.players.length;
+  const dealer = dealerForRound(roundIdx);
+  const order = [];
+  for (let i = 1; i <= N; i++) order.push((dealer + i) % N); // dealer+1 first, dealer last
+  return order;
+}
 
 function totals() {
   const t = state.players.map(() => 0);
   for (const r of state.history) for (let i = 0; i < t.length; i++) t[i] += r.deltas[i];
+  return t;
+}
+
+function totalsAfter(historySlice) {
+  const t = state.players.map(() => 0);
+  for (const r of historySlice) for (let i = 0; i < t.length; i++) t[i] += r.deltas[i];
   return t;
 }
 
@@ -90,54 +144,102 @@ function renderGame() {
   const tc = $('trump-card');
   tc.textContent = trump.sym;
   tc.className = trump.cls;
+  const dealerIdx = dealerForRound(idx);
+  $('dealer-name').textContent = state.players[dealerIdx];
 
-  const body = $('score-body');
-  body.innerHTML = '';
-  const t = totals();
+  const table = $('game-table');
+  const N = state.players.length;
+
+  // Header
+  let html = '<thead><tr><th class="round-cell">Round</th>';
   state.players.forEach((p, i) => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${escapeHtml(p)}</td>
-      <td>${state.phase === 'bidding'
-        ? `<input type="number" min="0" max="${cards}" value="${state.pendingBids[i]}" data-bid="${i}" />`
-        : renderBidIndicator(state.pendingBids[i], state.pendingActuals[i])}
-      </td>
-      <td>${state.phase === 'playing'
-        ? `<input type="number" min="0" max="${cards}" value="${state.pendingActuals[i]}" data-actual="${i}" />`
-        : '—'}
-      </td>
-      <td>${state.phase === 'playing' ? scoreFor(state.pendingBids[i], state.pendingActuals[i]) : '—'}</td>
-      <td><b>${t[i]}</b></td>
-    `;
-    body.appendChild(tr);
+    const isDealer = i === dealerIdx;
+    html += `<th class="${isDealer ? 'dealer-col' : ''}">${escapeHtml(p)}${isDealer ? '<div class="dealer-pill">DEALER</div>' : ''}</th>`;
+  });
+  html += '</tr></thead><tbody>';
+
+  // Historical rounds
+  state.history.forEach((r, ri) => {
+    const rTrump = SUITS.find(s => s.name === r.trump);
+    const rDealer = dealerForRound(ri);
+    html += `<tr><td class="round-cell">
+      <div><span class="cards-num">${r.cards}</span><span class="trump-sym ${rTrump.cls}">${rTrump.sym}</span></div>
+      <small>R${ri + 1}</small>
+    </td>`;
+    state.players.forEach((p, pi) => {
+      const ok = r.bids[pi] === r.actuals[pi];
+      const isDealer = pi === rDealer;
+      html += `<td class="${isDealer ? 'dealer-col' : ''}">
+        <div class="cell-stack">
+          <span class="bid-result ${ok ? 'bid-correct' : 'bid-miss'}">${r.bids[pi]}</span>
+          <span class="cell-delta ${r.deltas[pi] >= 0 ? 'pos' : 'neg'}">→${r.actuals[pi]} (${r.deltas[pi] >= 0 ? '+' : ''}${r.deltas[pi]})</span>
+          <span class="cell-total">${r.totals[pi]}</span>
+        </div>
+      </td>`;
+    });
+    html += '</tr>';
   });
 
-  // Listen for input changes
-  body.querySelectorAll('input[data-bid]').forEach((inp) => {
+  // Current round
+  const order = bidOrderForRound(idx);
+  const lastBidderIdx = order[order.length - 1]; // = dealer
+  const curTotals = totals();
+  html += `<tr class="current-row"><td class="round-cell">
+    <div><span class="cards-num">${cards}</span><span class="trump-sym ${trump.cls}">${trump.sym}</span></div>
+    <small>R${idx + 1} (now)</small>
+  </td>`;
+  state.players.forEach((p, pi) => {
+    const isDealer = pi === dealerIdx;
+    let cell = '';
+    if (state.phase === 'bidding') {
+      // Bid input + running total
+      const b = state.pendingBids[pi];
+      cell = `<div class="cell-stack">
+        <input type="number" inputmode="numeric" pattern="[0-9]*" class="cell-input" min="0" max="${cards}"
+          value="${b}" data-bid="${pi}" />
+        <span class="cell-total">${curTotals[pi]}</span>
+      </div>`;
+    } else {
+      // Show bid as indicator, actual input, delta preview
+      const b = state.pendingBids[pi];
+      const a = state.pendingActuals[pi];
+      const delta = scoreFor(b, a);
+      const ok = b === a;
+      cell = `<div class="cell-stack">
+        <span class="bid-result ${ok ? 'bid-correct' : 'bid-miss'}">${b}</span>
+        <input type="number" inputmode="numeric" pattern="[0-9]*" class="cell-input" min="0" max="${cards}"
+          value="${a}" data-actual="${pi}" />
+        <span class="cell-delta ${delta >= 0 ? 'pos' : 'neg'}">${delta >= 0 ? '+' : ''}${delta}</span>
+        <span class="cell-total">${curTotals[pi] + delta}</span>
+      </div>`;
+    }
+    html += `<td class="${isDealer ? 'dealer-col' : ''}">${cell}</td>`;
+  });
+  html += '</tr></tbody>';
+  table.innerHTML = html;
+
+  // Bind inputs
+  table.querySelectorAll('input[data-bid]').forEach((inp) => {
     inp.addEventListener('input', () => {
       state.pendingBids[+inp.dataset.bid] = clampInt(inp.value, 0, cards);
-      updateBidWarning();
+      updateBidWarning(inp);
     });
+    inp.addEventListener('focus', () => updateBidWarning(inp));
+    inp.addEventListener('blur', () => updateBidWarning(null));
   });
-  body.querySelectorAll('input[data-actual]').forEach((inp) => {
+  table.querySelectorAll('input[data-actual]').forEach((inp) => {
     inp.addEventListener('input', () => {
       state.pendingActuals[+inp.dataset.actual] = clampInt(inp.value, 0, cards);
-      // Re-render to show updated round/total preview
-      renderGame();
+      renderGame(); // refresh deltas/totals preview
+      // try to keep focus
+      const sel = table.querySelector(`input[data-actual="${inp.dataset.actual}"]`);
+      if (sel) sel.focus();
     });
   });
 
-  // Buttons
   $('lock-bids').classList.toggle('hidden', state.phase !== 'bidding');
   $('commit-round').classList.toggle('hidden', state.phase !== 'playing');
-  updateBidWarning();
-  renderLog();
-}
-
-function renderBidIndicator(bid, actual) {
-  const ok = bid === actual;
-  const cls = ok ? 'bid-correct' : 'bid-miss';
-  return `<span class="bid-result ${cls}">${bid}</span>`;
+  updateBidWarning(null);
 }
 
 function scoreFor(bid, actual) {
@@ -145,20 +247,47 @@ function scoreFor(bid, actual) {
   return -Math.abs(actual - bid);
 }
 
-function updateBidWarning() {
-  if (state.phase !== 'bidding') { $('bid-warning').textContent = ''; return; }
+function updateBidWarning(focusedInput) {
+  const warn = $('bid-warning');
+  if (state.phase !== 'bidding') {
+    // In playing phase, optionally show running tricks
+    const cards = state.rounds[state.currentRound];
+    const sum = state.pendingActuals.reduce((a, b) => a + b, 0);
+    warn.className = 'bid-warning info';
+    warn.textContent = `Tricks entered: ${sum} / ${cards}`;
+    return;
+  }
   const cards = state.rounds[state.currentRound];
-  const sum = state.pendingBids.reduce((a, b) => a + b, 0);
-  if (sum === cards) {
-    $('bid-warning').textContent = `⚠️ Total bids equal cards (${cards}). In contract whist, total bids must NOT equal cards. The dealer is usually constrained.`;
+  const order = bidOrderForRound(state.currentRound);
+  const lastBidderIdx = order[order.length - 1];
+
+  // Only show warning when the LAST bidder's input is focused
+  if (focusedInput && +focusedInput.dataset.bid === lastBidderIdx) {
+    const otherSum = state.pendingBids.reduce((acc, b, i) => i === lastBidderIdx ? acc : acc + b, 0);
+    const forbidden = cards - otherSum;
+    const cur = state.pendingBids[lastBidderIdx];
+    if (cur === forbidden) {
+      warn.className = 'bid-warning';
+      warn.textContent = `⚠️ Dealer (${state.players[lastBidderIdx]}) cannot bid ${forbidden} — total bids would equal cards (${cards}).`;
+    } else {
+      warn.className = 'bid-warning info';
+      warn.textContent = `Others bid ${otherSum}. Dealer cannot bid ${forbidden} (would total ${cards}).`;
+    }
   } else {
-    $('bid-warning').textContent = `Total bids: ${sum} / ${cards} cards`;
+    warn.className = 'bid-warning info';
+    warn.textContent = '';
   }
 }
 
 function lockBids() {
   const cards = state.rounds[state.currentRound];
   for (const b of state.pendingBids) if (b < 0 || b > cards) { alert('Bid out of range'); return; }
+  const order = bidOrderForRound(state.currentRound);
+  const lastBidderIdx = order[order.length - 1];
+  const sum = state.pendingBids.reduce((a, b) => a + b, 0);
+  if (sum === cards) {
+    if (!confirm(`Total bids equal cards (${cards}). Dealer (${state.players[lastBidderIdx]}) shouldn't be allowed this. Continue anyway?`)) return;
+  }
   state.phase = 'playing';
   state.pendingActuals = state.players.map(() => 0);
   saveActive();
@@ -213,31 +342,9 @@ function undoLastRound() {
   renderGame();
 }
 
-function renderLog() {
-  const log = $('log-body');
-  log.innerHTML = '';
-  state.history.forEach((r, idx) => {
-    const trump = SUITS.find(s => s.name === r.trump);
-    const row = document.createElement('div');
-    row.className = 'round-row';
-    let parts = `<span class="round-label">R${idx + 1} · ${r.cards}🃏 · <span class="${trump.cls}">${trump.sym}</span></span>`;
-    state.players.forEach((p, i) => {
-      const ok = r.bids[i] === r.actuals[i];
-      parts += `<span class="player-pill">
-        ${escapeHtml(p)}:
-        <span class="bid-result ${ok ? 'bid-correct' : 'bid-miss'}" style="width:24px;height:24px;font-size:.75rem;">${r.bids[i]}</span>
-        →${r.actuals[i]} (${r.deltas[i] >= 0 ? '+' : ''}${r.deltas[i]}) = ${r.totals[i]}
-      </span>`;
-    });
-    row.innerHTML = parts;
-    log.appendChild(row);
-  });
-}
-
 // -------- Finish / Summary --------
 function finishGame() {
   const finished = { ...state, finishedAt: new Date().toISOString() };
-  // Save to history
   const list = loadHistory();
   list.unshift(finished);
   sessionStorage.setItem(STORAGE_KEY, JSON.stringify(list));
@@ -259,7 +366,6 @@ function renderSummary(game) {
   const winner = ranked[0];
   $('winner-banner').innerHTML = `🏆 Winner: <b>${escapeHtml(winner.name)}</b> with ${winner.score} points`;
 
-  // Chart
   if (chartInstance) chartInstance.destroy();
   const labels = ['Start', ...game.history.map((_, i) => `R${i + 1}`)];
   const colors = ['#4caf83', '#5b9dff', '#e3654d', '#d9a441', '#c084fc', '#22c1c3', '#f472b6'];
@@ -268,8 +374,7 @@ function renderSummary(game) {
     data: [0, ...game.history.map(r => r.totals[i])],
     borderColor: colors[i % colors.length],
     backgroundColor: colors[i % colors.length] + '33',
-    tension: 0.25,
-    fill: false,
+    tension: 0.25, fill: false,
   }));
   chartInstance = new Chart($('score-chart'), {
     type: 'line',
@@ -284,7 +389,6 @@ function renderSummary(game) {
     },
   });
 
-  // Stats
   const stats = computeStats(game);
   const sb = $('stats-block');
   sb.innerHTML = '';
@@ -292,7 +396,6 @@ function renderSummary(game) {
     sb.innerHTML += `<div class="stat-card"><div class="stat-label">${s.label}</div><div class="stat-value">${s.value}</div></div>`;
   });
 
-  // Final table
   const ft = $('final-table');
   ft.innerHTML = `
     <thead><tr><th>Rank</th><th>Player</th><th>Score</th><th>Correct bids</th><th>Best round</th></tr></thead>
@@ -316,7 +419,6 @@ function computeStats(game) {
   const rounds = game.history.length;
   if (!rounds) return [{ label: 'Rounds played', value: 0 }];
 
-  // Most accurate player (highest correct bid %)
   const accuracy = game.players.map((p, i) => ({
     name: p,
     correct: game.history.filter(h => h.bids[i] === h.actuals[i]).length,
@@ -324,26 +426,22 @@ function computeStats(game) {
   accuracy.sort((a, b) => b.correct - a.correct);
   stats.push({ label: 'Most accurate', value: `${accuracy[0].name} (${accuracy[0].correct}/${rounds})` });
 
-  // Biggest single round
   let bigDelta = { name: '—', delta: -Infinity, round: 0 };
   game.history.forEach((h, ri) => h.deltas.forEach((d, pi) => {
     if (d > bigDelta.delta) bigDelta = { name: game.players[pi], delta: d, round: ri + 1 };
   }));
   stats.push({ label: 'Biggest round', value: `${bigDelta.name} +${bigDelta.delta} (R${bigDelta.round})` });
 
-  // Worst single round
   let worstDelta = { name: '—', delta: Infinity, round: 0 };
   game.history.forEach((h, ri) => h.deltas.forEach((d, pi) => {
     if (d < worstDelta.delta) worstDelta = { name: game.players[pi], delta: d, round: ri + 1 };
   }));
   stats.push({ label: 'Worst round', value: `${worstDelta.name} ${worstDelta.delta} (R${worstDelta.round})` });
 
-  // Total tricks bid vs won (avg per round)
   const totalBids = game.history.reduce((a, h) => a + h.bids.reduce((x, y) => x + y, 0), 0);
   const totalCards = game.history.reduce((a, h) => a + h.cards, 0);
-  stats.push({ label: 'Avg over/under-bid', value: `${(totalBids - totalCards >= 0 ? '+' : '')}${(totalBids - totalCards)} tricks` });
+  stats.push({ label: 'Net over/under-bid', value: `${(totalBids - totalCards >= 0 ? '+' : '')}${(totalBids - totalCards)} tricks` });
 
-  // Lead changes
   let leadChanges = 0, lastLead = -1;
   game.history.forEach(h => {
     let leader = 0;
@@ -389,6 +487,8 @@ function renderHistory() {
   list.querySelectorAll('button[data-view]').forEach(b => b.addEventListener('click', () => {
     const idx = +b.dataset.view;
     state = games[idx];
+    // Ensure firstDealer exists on legacy entries
+    if (state.firstDealer == null) state.firstDealer = 0;
     renderSummary(state);
     showView('summary');
   }));
@@ -430,7 +530,6 @@ function init() {
     if (confirm('Clear all saved games?')) { sessionStorage.removeItem(STORAGE_KEY); renderHistory(); }
   });
 
-  // Resume active game if present
   const active = sessionStorage.getItem(ACTIVE_KEY);
   if (active) {
     try {
