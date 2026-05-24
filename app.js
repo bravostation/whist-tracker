@@ -284,6 +284,9 @@ function renderGame() {
 
   $('lock-bids').classList.toggle('hidden', state.phase !== 'bidding');
   $('commit-round').classList.toggle('hidden', state.phase !== 'playing');
+  // Update quick-entry button labels per phase
+  const qLabel = state.phase === 'bidding' ? '⚡ Quick bid' : '⚡ Quick score';
+  document.querySelectorAll('.quick-entry-btn').forEach(b => b.textContent = qLabel);
   updateBidWarning(null);
   startTimer();
 }
@@ -495,13 +498,10 @@ function undoLastRound() {
 let modalCtx = null;
 
 function openQuickEntry() {
-  if (state.phase !== 'bidding') {
-    alert('Quick entry is only for bidding. Use the table to score tricks.');
-    return;
-  }
-  // Order: player to the LEFT of dealer first → dealer last
+  // Order for bidding: left-of-dealer first, dealer last.
+  // Order for scoring: same order works fine (any consistent rotation).
   const order = bidOrderForRound(state.currentRound);
-  modalCtx = { order, step: 0 };
+  modalCtx = { order, step: 0, phase: state.phase };
   $('modal-backdrop').classList.remove('hidden');
   renderModal();
 }
@@ -514,54 +514,66 @@ function closeModal() {
 
 function renderModal() {
   if (!modalCtx) return;
-  const { order, step } = modalCtx;
+  const { order, step, phase } = modalCtx;
+  const isBid = phase === 'bidding';
   const cards = state.rounds[state.currentRound];
   const dealerIdx = dealerForRound(state.currentRound);
   const N = state.players.length;
   const playerIdx = order[step];
   const isLast = step === order.length - 1;
+  const labelWord = isBid ? 'bid' : 'tricks won';
+  const labelWordCap = isBid ? 'Bid' : 'Score';
 
-  $('modal-title').textContent = `Round ${state.currentRound + 1} bids · ${cards} cards · ${trumpFor(state.currentRound).sym} trump`;
-  $('modal-sub').textContent = `Bid ${step + 1} of ${order.length}`;
+  $('modal-title').textContent = `Round ${state.currentRound + 1} ${isBid ? 'bids' : 'scoring'} · ${cards} cards · ${trumpFor(state.currentRound).sym} trump`;
+  $('modal-sub').textContent = `${labelWordCap} ${step + 1} of ${order.length}`;
   $('modal-player').textContent = state.players[playerIdx];
   const pos = positionRelativeToDealer(playerIdx, dealerIdx, N);
   let posLabel;
-  if (pos === 0) posLabel = 'DEALER (bids last)';
-  else if (pos === 1) posLabel = '1st to bid · left of dealer';
-  else if (pos === N - 1) posLabel = `${pos}${ord(pos)} to bid · right of dealer`;
-  else posLabel = `${pos}${ord(pos)} to bid`;
+  if (pos === 0) posLabel = isBid ? 'DEALER (bids last)' : 'DEALER';
+  else if (pos === 1) posLabel = '1st · left of dealer';
+  else if (pos === N - 1) posLabel = `${pos}${ord(pos)} · right of dealer`;
+  else posLabel = `${pos}${ord(pos)}`;
   $('modal-position').textContent = posLabel;
 
-  const cur = state.pendingBids[playerIdx];
+  const pending = isBid ? state.pendingBids : state.pendingActuals;
+  const cur = pending[playerIdx];
   const inp = $('modal-input');
   inp.max = cards;
+  inp.placeholder = '0';
   inp.value = cur == null ? '' : cur;
-  // Focus and select
-  setTimeout(() => { inp.focus(); inp.select(); }, 50);
+  setTimeout(() => { inp.focus(); selectAllValue(inp); }, 50);
 
-  // Build numeric pad 0..cards
+  // Numeric pad
   const pad = $('modal-pad');
   pad.innerHTML = '';
+
+  // Computed forbidden / hint values
   let forbidden = -1;
-  if (isLast) {
+  let remaining = null;
+  if (isBid && isLast) {
     const otherSum = state.pendingBids.reduce((a, b, i) => i === playerIdx ? a : a + (b ?? 0), 0);
     forbidden = cards - otherSum;
   }
+  if (!isBid) {
+    const otherSum = state.pendingActuals.reduce((a, b, i) => i === playerIdx ? a : a + (b ?? 0), 0);
+    remaining = cards - otherSum;
+  }
+
   for (let n = 0; n <= cards; n++) {
     const btn = document.createElement('button');
     btn.textContent = n;
     btn.type = 'button';
-    if (n === forbidden) btn.classList.add('disabled');
+    if (isBid && n === forbidden) btn.classList.add('disabled');
+    // For scoring last player, hint the only valid number but don't disable others (user can override)
+    if (!isBid && isLast && n === remaining) btn.classList.add('selected');
     if (cur === n) btn.classList.add('selected');
     btn.addEventListener('click', () => {
-      if (n === forbidden) return;
-      state.pendingBids[playerIdx] = n;
+      if (isBid && n === forbidden) return;
+      pending[playerIdx] = n;
       inp.value = n;
       saveActive();
-      // Update selected highlight
       pad.querySelectorAll('button').forEach(b => b.classList.remove('selected'));
       btn.classList.add('selected');
-      // Auto-advance after short delay (mobile friendly)
       modalNext();
     });
     pad.appendChild(btn);
@@ -569,7 +581,7 @@ function renderModal() {
 
   // Hint
   const hint = $('modal-hint');
-  if (isLast) {
+  if (isBid && isLast) {
     const otherSum = state.pendingBids.reduce((a, b, i) => i === playerIdx ? a : a + (b ?? 0), 0);
     const forb = cards - otherSum;
     if (forb >= 0 && forb <= cards) {
@@ -579,13 +591,22 @@ function renderModal() {
       hint.className = 'modal-hint info';
       hint.textContent = `Others bid ${otherSum} — any 0–${cards} allowed.`;
     }
+  } else if (!isBid) {
+    const otherSum = state.pendingActuals.reduce((a, b, i) => i === playerIdx ? a : a + (b ?? 0), 0);
+    const rem = cards - otherSum;
+    const bidVal = state.pendingBids[playerIdx];
+    hint.className = 'modal-hint info';
+    let parts = [`Bid was ${bidVal}.`];
+    if (isLast) parts.push(`Auto-fills to ${Math.max(0, rem)} to total ${cards}.`);
+    else parts.push(`Tricks remaining: ${rem}.`);
+    hint.textContent = parts.join(' ');
   } else {
     hint.className = 'modal-hint info';
     hint.textContent = '';
   }
 
   $('modal-back').disabled = step === 0;
-  $('modal-next').textContent = isLast ? '✓ Finish bids' : 'Next →';
+  $('modal-next').textContent = isLast ? (isBid ? '✓ Finish bids' : '✓ Score round') : 'Next →';
 }
 
 function ord(n) {
@@ -595,15 +616,24 @@ function ord(n) {
 
 function modalCommitInput() {
   if (!modalCtx) return true;
-  const { order, step } = modalCtx;
+  const { order, step, phase } = modalCtx;
+  const isBid = phase === 'bidding';
   const playerIdx = order[step];
   const isLast = step === order.length - 1;
   const cards = state.rounds[state.currentRound];
+  const pending = isBid ? state.pendingBids : state.pendingActuals;
   const raw = $('modal-input').value.trim();
-  if (raw === '') { state.pendingBids[playerIdx] = 0; }
-  else {
+  if (raw === '') {
+    // For scoring last player, auto-fill remaining
+    if (!isBid && isLast) {
+      const otherSum = state.pendingActuals.reduce((a, b, i) => i === playerIdx ? a : a + (b ?? 0), 0);
+      pending[playerIdx] = Math.max(0, Math.min(cards, cards - otherSum));
+    } else {
+      pending[playerIdx] = 0;
+    }
+  } else {
     let v = clampInt(raw, 0, cards);
-    if (isLast) {
+    if (isBid && isLast) {
       const otherSum = state.pendingBids.reduce((a, b, i) => i === playerIdx ? a : a + (b ?? 0), 0);
       const forb = cards - otherSum;
       if (v === forb) {
@@ -612,7 +642,7 @@ function modalCommitInput() {
         return false;
       }
     }
-    state.pendingBids[playerIdx] = v;
+    pending[playerIdx] = v;
   }
   saveActive();
   return true;
@@ -622,9 +652,10 @@ function modalNext() {
   if (!modalCtx) return;
   if (!modalCommitInput()) return;
   if (modalCtx.step === modalCtx.order.length - 1) {
-    // Finish — go into playing phase
+    const wasBid = modalCtx.phase === 'bidding';
     closeModal();
-    lockBids();
+    if (wasBid) lockBids();
+    else commitRound();
     return;
   }
   modalCtx.step += 1;
@@ -1207,6 +1238,7 @@ function init() {
   $('undo-round').addEventListener('click', undoLastRound);
   $('end-game-btn').addEventListener('click', endGameEarly);
   $('quick-entry-btn').addEventListener('click', openQuickEntry);
+  $('quick-entry-btn-bottom').addEventListener('click', openQuickEntry);
   $('modal-close').addEventListener('click', closeModal);
   $('modal-next').addEventListener('click', modalNext);
   $('modal-back').addEventListener('click', modalBack);
