@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Contract Whist Tracker</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>🃏 Contract Whist</h1>
+    <nav>
+      <button id="nav-new" class="nav-btn active">New Game</button>
+      <button id="nav-history" class="nav-btn">History</button>
+    </nav>
+  </header>
+
+  <!-- SETUP -->
+  <section id="view-setup" class="view">
+    <h2>Game Setup</h2>
+    <div class="setup-grid">
+      <label>
+        Number of players
+        <input type="number" id="setup-players" min="2" max="7" value="4" />
+      </label>
+      <label>
+        Starting cards
+        <input type="number" id="setup-start" min="1" value="7" />
+        <small id="setup-max-note">Max for 4 players: 13</small>
+      </label>
+      <label>
+        Direction
+        <select id="setup-direction">
+          <option value="down">Down only (e.g. 7→1)</option>
+          <option value="updown" selected>Up &amp; down (e.g. 7→1→7)</option>
+        </select>
+      </label>
+    </div>
+    <div id="setup-names"></div>
+    <button id="start-game" class="primary">Start Game</button>
+  </section>
+
+  <!-- GAME -->
+  <section id="view-game" class="view hidden">
+    <div class="game-header">
+      <div class="round-info">
+        <div class="round-num">Round <span id="round-current">1</span> / <span id="round-total">–</span></div>
+        <div class="round-meta">
+          <span class="trump"><span class="trump-label">Trump:</span> <span id="trump-card">♠</span></span>
+          <span class="cards"><span id="card-count">7</span> cards</span>
+        </div>
+      </div>
+      <button id="end-game-btn" class="secondary">End Game</button>
+    </div>
+
+    <table class="scoretable">
+      <thead>
+        <tr>
+          <th>Player</th>
+          <th>Bid</th>
+          <th>Got</th>
+          <th>Round</th>
+          <th>Total</th>
+        </tr>
+      </thead>
+      <tbody id="score-body"></tbody>
+    </table>
+
+    <div class="bid-warning" id="bid-warning"></div>
+
+    <div class="game-actions">
+      <button id="lock-bids" class="primary">Lock Bids</button>
+      <button id="commit-round" class="primary hidden">Score Round</button>
+      <button id="undo-round" class="secondary">Undo Last Round</button>
+    </div>
+
+    <div class="rounds-log">
+      <h3>Rounds so far</h3>
+      <div id="log-body"></div>
+    </div>
+  </section>
+
+  <!-- SUMMARY -->
+  <section id="view-summary" class="view hidden">
+    <h2>🏆 Game Summary</h2>
+    <div id="winner-banner"></div>
+    <canvas id="score-chart"></canvas>
+    <div id="stats-block"></div>
+    <table class="scoretable" id="final-table"></table>
+    <div class="game-actions">
+      <button id="play-again" class="primary">New Game</button>
+      <button id="view-history-btn" class="secondary">View History</button>
+    </div>
+  </section>
+
+  <!-- HISTORY -->
+  <section id="view-history" class="view hidden">
+    <h2>Past Games (this session)</h2>
+    <div id="history-list"></div>
+    <button id="clear-history" class="secondary">Clear All History</button>
+  </section>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
