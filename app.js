@@ -15,6 +15,17 @@ const SUITS = [
 
 const STORAGE_KEY = 'whist_history_v1';
 const ACTIVE_KEY = 'whist_active_v2';
+const STORE = window.localStorage;
+// Migrate any old sessionStorage data on first load
+(function migrate() {
+  try {
+    const ss = window.sessionStorage;
+    for (const k of [STORAGE_KEY, ACTIVE_KEY]) {
+      if (ss.getItem(k) && !STORE.getItem(k)) STORE.setItem(k, ss.getItem(k));
+      ss.removeItem(k);
+    }
+  } catch {}
+})();
 
 const $ = (id) => document.getElementById(id);
 
@@ -98,11 +109,11 @@ function startGame() {
     rounds,
     firstDealer,
     currentRound: 0,
-    phase: 'bidding', // 'bidding' | 'playing'
+    phase: 'bidding',
     history: [],
-    pendingBids: players.map(() => 0),
-    pendingActuals: players.map(() => 0),
-    activeBidder: 0, // index within bidOrder array; first to bid = left of dealer
+    pendingBids: players.map(() => null),
+    pendingActuals: players.map(() => null),
+    activeBidder: 0,
   };
   saveActive();
   showView('game');
@@ -196,27 +207,28 @@ function renderGame() {
     const isDealer = pi === dealerIdx;
     let cell = '';
     if (state.phase === 'bidding') {
-      // Bid input + running total
       const b = state.pendingBids[pi];
+      const bVal = b == null ? '' : b;
       cell = `<div class="cell-stack">
         <input type="number" inputmode="numeric" pattern="[0-9]*" class="cell-input" min="0" max="${cards}"
-          value="${b}" data-bid="${pi}" />
+          placeholder="0" value="${bVal}" data-bid="${pi}" />
         <span class="cell-total">${curTotals[pi]}</span>
       </div>`;
     } else {
-      // Show bid as indicator, actual input, delta preview
-      const b = state.pendingBids[pi];
+      const b = state.pendingBids[pi] ?? 0;
       const a = state.pendingActuals[pi];
-      const delta = scoreFor(b, a);
-      const ok = b === a;
+      const aVal = a == null ? '' : a;
+      const aNum = a ?? 0;
+      const delta = scoreFor(b, aNum);
+      const ok = b === aNum && a != null;
       const dStr = (delta >= 0 ? '+' : '') + delta;
       cell = `<div class="cell-stack">
         <span class="bid-with-delta">
-          <span class="bid-result ${ok ? 'bid-correct' : 'bid-miss'}">${b}</span><sup class="delta-sup ${delta >= 0 ? 'pos' : 'neg'}">${dStr}</sup>
+          <span class="bid-result ${ok ? 'bid-correct' : 'bid-miss'}">${b}</span><sup class="delta-sup ${delta >= 0 ? 'pos' : 'neg'}" data-sup="${pi}">${a == null ? '' : dStr}</sup>
         </span>
         <input type="number" inputmode="numeric" pattern="[0-9]*" class="cell-input" min="0" max="${cards}"
-          value="${a}" data-actual="${pi}" />
-        <span class="cell-total">${curTotals[pi] + delta}</span>
+          placeholder="0" value="${aVal}" data-actual="${pi}" />
+        <span class="cell-total" data-total="${pi}">${a == null ? curTotals[pi] : curTotals[pi] + delta}</span>
       </div>`;
     }
     html += `<td class="${isDealer ? 'dealer-col' : ''}">${cell}</td>`;
@@ -226,20 +238,25 @@ function renderGame() {
 
   // Bind inputs
   table.querySelectorAll('input[data-bid]').forEach((inp) => {
+    inp.addEventListener('focus', () => { inp.select(); updateBidWarning(inp); });
     inp.addEventListener('input', () => {
-      state.pendingBids[+inp.dataset.bid] = clampInt(inp.value, 0, cards);
+      const raw = inp.value.trim();
+      state.pendingBids[+inp.dataset.bid] = raw === '' ? null : clampInt(raw, 0, cards);
       updateBidWarning(inp);
+      saveActive();
     });
-    inp.addEventListener('focus', () => updateBidWarning(inp));
     inp.addEventListener('blur', () => updateBidWarning(null));
   });
   table.querySelectorAll('input[data-actual]').forEach((inp) => {
+    inp.addEventListener('focus', () => inp.select());
     inp.addEventListener('input', () => {
-      state.pendingActuals[+inp.dataset.actual] = clampInt(inp.value, 0, cards);
-      renderGame(); // refresh deltas/totals preview
-      // try to keep focus
-      const sel = table.querySelector(`input[data-actual="${inp.dataset.actual}"]`);
-      if (sel) sel.focus();
+      const pi = +inp.dataset.actual;
+      const raw = inp.value.trim();
+      state.pendingActuals[pi] = raw === '' ? null : clampInt(raw, 0, cards);
+      // In-place update — don't re-render or we lose focus/cursor
+      updateActualCell(pi);
+      updateBidWarning(null);
+      saveActive();
     });
   });
 
@@ -253,12 +270,39 @@ function scoreFor(bid, actual) {
   return -Math.abs(actual - bid);
 }
 
+// In-place update of one player's current-row cell during 'playing' phase
+// (avoids re-rendering the whole table so focus/cursor stays put)
+function updateActualCell(pi) {
+  const tbl = $('game-table');
+  const supEl = tbl.querySelector(`sup[data-sup="${pi}"]`);
+  const totEl = tbl.querySelector(`span[data-total="${pi}"]`);
+  const bidEl = tbl.querySelectorAll('.current-row .bid-result')[pi];
+  if (!supEl || !totEl || !bidEl) return;
+  const b = state.pendingBids[pi] ?? 0;
+  const a = state.pendingActuals[pi];
+  const curTotals = totals();
+  if (a == null) {
+    supEl.textContent = '';
+    totEl.textContent = curTotals[pi];
+    bidEl.classList.remove('bid-correct');
+    bidEl.classList.add('bid-miss');
+    return;
+  }
+  const delta = scoreFor(b, a);
+  const ok = b === a;
+  bidEl.classList.toggle('bid-correct', ok);
+  bidEl.classList.toggle('bid-miss', !ok);
+  supEl.textContent = (delta >= 0 ? '+' : '') + delta;
+  supEl.classList.toggle('pos', delta >= 0);
+  supEl.classList.toggle('neg', delta < 0);
+  totEl.textContent = curTotals[pi] + delta;
+}
+
 function updateBidWarning(focusedInput) {
   const warn = $('bid-warning');
   if (state.phase !== 'bidding') {
-    // In playing phase, optionally show running tricks
     const cards = state.rounds[state.currentRound];
-    const sum = state.pendingActuals.reduce((a, b) => a + b, 0);
+    const sum = state.pendingActuals.reduce((a, b) => a + (b ?? 0), 0);
     warn.className = 'bid-warning info';
     warn.textContent = `Tricks entered: ${sum} / ${cards}`;
     return;
@@ -267,17 +311,19 @@ function updateBidWarning(focusedInput) {
   const order = bidOrderForRound(state.currentRound);
   const lastBidderIdx = order[order.length - 1];
 
-  // Only show warning when the LAST bidder's input is focused
   if (focusedInput && +focusedInput.dataset.bid === lastBidderIdx) {
-    const otherSum = state.pendingBids.reduce((acc, b, i) => i === lastBidderIdx ? acc : acc + b, 0);
+    const otherSum = state.pendingBids.reduce((acc, b, i) => i === lastBidderIdx ? acc : acc + (b ?? 0), 0);
     const forbidden = cards - otherSum;
     const cur = state.pendingBids[lastBidderIdx];
-    if (cur === forbidden) {
+    if (cur != null && cur === forbidden) {
       warn.className = 'bid-warning';
       warn.textContent = `⚠️ Dealer (${state.players[lastBidderIdx]}) cannot bid ${forbidden} — total bids would equal cards (${cards}).`;
-    } else {
+    } else if (forbidden >= 0 && forbidden <= cards) {
       warn.className = 'bid-warning info';
       warn.textContent = `Others bid ${otherSum}. Dealer cannot bid ${forbidden} (would total ${cards}).`;
+    } else {
+      warn.className = 'bid-warning info';
+      warn.textContent = `Others bid ${otherSum} — dealer can bid anything 0–${cards}.`;
     }
   } else {
     warn.className = 'bid-warning info';
@@ -287,6 +333,8 @@ function updateBidWarning(focusedInput) {
 
 function lockBids() {
   const cards = state.rounds[state.currentRound];
+  // Replace nulls with 0 before validation
+  state.pendingBids = state.pendingBids.map(b => b == null ? 0 : b);
   for (const b of state.pendingBids) if (b < 0 || b > cards) { alert('Bid out of range'); return; }
   const order = bidOrderForRound(state.currentRound);
   const lastBidderIdx = order[order.length - 1];
@@ -295,13 +343,14 @@ function lockBids() {
     if (!confirm(`Total bids equal cards (${cards}). Dealer (${state.players[lastBidderIdx]}) shouldn't be allowed this. Continue anyway?`)) return;
   }
   state.phase = 'playing';
-  state.pendingActuals = state.players.map(() => 0);
+  state.pendingActuals = state.players.map(() => null);
   saveActive();
   renderGame();
 }
 
 function commitRound() {
   const cards = state.rounds[state.currentRound];
+  state.pendingActuals = state.pendingActuals.map(a => a == null ? 0 : a);
   const sum = state.pendingActuals.reduce((a, b) => a + b, 0);
   if (sum !== cards) {
     if (!confirm(`Tricks won total ${sum} but there are ${cards} cards. Save anyway?`)) return;
@@ -320,8 +369,8 @@ function commitRound() {
   });
   state.currentRound += 1;
   state.phase = 'bidding';
-  state.pendingBids = state.players.map(() => 0);
-  state.pendingActuals = state.players.map(() => 0);
+  state.pendingBids = state.players.map(() => null);
+  state.pendingActuals = state.players.map(() => null);
   saveActive();
   if (state.currentRound >= state.rounds.length) {
     finishGame();
@@ -353,8 +402,8 @@ function finishGame() {
   const finished = { ...state, finishedAt: new Date().toISOString() };
   const list = loadHistory();
   list.unshift(finished);
-  sessionStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-  sessionStorage.removeItem(ACTIVE_KEY);
+  STORE.setItem(STORAGE_KEY, JSON.stringify(list));
+  STORE.removeItem(ACTIVE_KEY);
   state = finished;
   renderSummary(finished);
   showView('summary');
@@ -464,7 +513,7 @@ function computeStats(game) {
 
 // -------- History view --------
 function loadHistory() {
-  try { return JSON.parse(sessionStorage.getItem(STORAGE_KEY) || '[]'); }
+  try { return JSON.parse(STORE.getItem(STORAGE_KEY) || '[]'); }
   catch { return []; }
 }
 
@@ -501,7 +550,7 @@ function renderHistory() {
 }
 
 // -------- Utility --------
-function saveActive() { sessionStorage.setItem(ACTIVE_KEY, JSON.stringify(state)); }
+function saveActive() { STORE.setItem(ACTIVE_KEY, JSON.stringify(state)); }
 function clampInt(v, min, max) { let n = parseInt(v, 10); if (isNaN(n)) n = min; return Math.max(min, Math.min(max, n)); }
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 
@@ -521,22 +570,22 @@ function init() {
   $('commit-round').addEventListener('click', commitRound);
   $('undo-round').addEventListener('click', undoLastRound);
   $('end-game-btn').addEventListener('click', endGameEarly);
-  $('play-again').addEventListener('click', () => { state = null; sessionStorage.removeItem(ACTIVE_KEY); showView('setup'); });
+  $('play-again').addEventListener('click', () => { state = null; STORE.removeItem(ACTIVE_KEY); showView('setup'); });
   $('view-history-btn').addEventListener('click', () => { renderHistory(); showView('history'); });
   $('nav-new').addEventListener('click', () => {
     if (state && state.history && state.currentRound < state.rounds.length) {
       if (!confirm('Abandon current game?')) return;
-      sessionStorage.removeItem(ACTIVE_KEY);
+      STORE.removeItem(ACTIVE_KEY);
       state = null;
     }
     showView('setup');
   });
   $('nav-history').addEventListener('click', () => { renderHistory(); showView('history'); });
   $('clear-history').addEventListener('click', () => {
-    if (confirm('Clear all saved games?')) { sessionStorage.removeItem(STORAGE_KEY); renderHistory(); }
+    if (confirm('Clear all saved games?')) { STORE.removeItem(STORAGE_KEY); renderHistory(); }
   });
 
-  const active = sessionStorage.getItem(ACTIVE_KEY);
+  const active = STORE.getItem(ACTIVE_KEY);
   if (active) {
     try {
       state = JSON.parse(active);
