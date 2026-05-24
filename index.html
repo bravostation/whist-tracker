@@ -56,10 +56,15 @@
         <div class="round-meta">
           <span class="trump"><span class="trump-label">Trump:</span> <span id="trump-card">♠</span></span>
           <span class="cards"><span id="card-count">7</span> cards</span>
+          <span class="bid-summary" id="bid-summary"></span>
+          <span class="round-timer" id="round-timer" title="Elapsed time this round">⏱ 0:00</span>
         </div>
         <div class="dealer-info">Dealer: <b id="dealer-name">–</b> · Bids last</div>
       </div>
-      <button id="end-game-btn" class="secondary">End Game</button>
+      <div class="header-actions">
+        <button id="quick-entry-btn" class="secondary">⚡ Quick entry</button>
+        <button id="end-game-btn" class="secondary">End Game</button>
+      </div>
     </div>
 
     <div class="table-wrap">
@@ -79,9 +84,14 @@
   <section id="view-summary" class="view hidden">
     <h2>🏆 Game Summary</h2>
     <div id="winner-banner"></div>
+    <div id="share-row" class="share-row hidden">
+      <button id="share-game-btn" class="primary">🔗 Copy shareable link</button>
+      <span id="share-status" class="share-status"></span>
+    </div>
     <canvas id="score-chart"></canvas>
     <div id="stats-block"></div>
     <table class="scoretable" id="final-table"></table>
+    <div id="position-stats"></div>
     <div class="game-actions">
       <button id="play-again" class="primary">New Game</button>
       <button id="view-history-btn" class="secondary">View History</button>
@@ -90,10 +100,32 @@
 
   <!-- HISTORY -->
   <section id="view-history" class="view hidden">
-    <h2>Past Games (this session)</h2>
+    <h2>Past Games</h2>
     <div id="history-list"></div>
     <button id="clear-history" class="secondary">Clear All History</button>
   </section>
+</div>
+
+<!-- Quick entry modal -->
+<div id="modal-backdrop" class="modal-backdrop hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modal-title">Quick entry</h3>
+      <button id="modal-close" class="secondary">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-sub" id="modal-sub"></div>
+      <div class="modal-player" id="modal-player">–</div>
+      <div class="modal-position" id="modal-position"></div>
+      <input id="modal-input" type="number" inputmode="numeric" pattern="[0-9]*" class="modal-input" placeholder="0" />
+      <div class="modal-hint" id="modal-hint"></div>
+      <div class="modal-pad" id="modal-pad"></div>
+    </div>
+    <div class="modal-actions">
+      <button id="modal-back" class="secondary">← Back</button>
+      <button id="modal-next" class="primary">Next →</button>
+    </div>
+  </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>

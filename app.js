@@ -1,9 +1,8 @@
 // Contract Whist Tracker
 // Scoring: +3 + bid if exact; -|actual - bid| if missed
 // Trumps cycle: ♠ ♥ ♣ ♦ NT
-// Dealer rotates: round R dealer = (firstDealerIdx + R) % N
-// Bidding order: player to LEFT of dealer bids first; dealer bids LAST.
-// Last bidder (dealer) is constrained: total bids must NOT equal cards.
+// Dealer rotates: round R dealer = (firstDealer + R) % N
+// Bid order: player to LEFT of dealer first; dealer LAST and is constrained.
 
 const SUITS = [
   { sym: '♠', name: 'Spades', cls: 'suit-black' },
@@ -31,9 +30,11 @@ const $ = (id) => document.getElementById(id);
 
 let state = null;
 let chartInstance = null;
-let setupSelectedStarter = 'random'; // index or 'random'
+let setupSelectedStarter = 'random';
+let timerInterval = null;
+let viewingShared = false; // true when summary is loaded from a shared URL
 
-// -------- Setup view --------
+// -------- Setup --------
 function maxCardsFor(players) { return Math.floor(52 / players); }
 
 function renderPlayerNames() {
@@ -49,7 +50,6 @@ function renderPlayerNames() {
   const maxC = maxCardsFor(n);
   const startInp = $('setup-start');
   startInp.max = maxC;
-  // Default to max whenever player count changes, unless user has manually edited
   if (!startInp.dataset.userSet || parseInt(startInp.value, 10) > maxC) startInp.value = maxC;
   $('setup-max-note').textContent = `Max for ${n} players: ${maxC}`;
   if (setupSelectedStarter !== 'random' && setupSelectedStarter >= n) setupSelectedStarter = 'random';
@@ -100,9 +100,10 @@ function startGame() {
   let firstDealer = setupSelectedStarter;
   if (firstDealer === 'random') firstDealer = Math.floor(Math.random() * players.length);
 
+  const now = Date.now();
   state = {
-    id: Date.now(),
-    startedAt: new Date().toISOString(),
+    id: now,
+    startedAt: new Date(now).toISOString(),
     players,
     startCards: start,
     direction: dir,
@@ -113,19 +114,18 @@ function startGame() {
     history: [],
     pendingBids: players.map(() => null),
     pendingActuals: players.map(() => null),
-    activeBidder: 0,
+    roundStartedAt: now,
+    roundDurations: [], // ms for each completed round (close-of-score to close-of-score)
   };
   saveActive();
   showView('game');
   renderGame();
 }
 
-// -------- Game view --------
+// -------- Game --------
 function trumpFor(roundIdx) { return SUITS[roundIdx % SUITS.length]; }
 function dealerForRound(roundIdx) { return (state.firstDealer + roundIdx) % state.players.length; }
 
-// Bid order for a round: player to LEFT of dealer first, dealer last.
-// In setup seat order, "left" = next index (i+1 mod N).
 function bidOrderForRound(roundIdx) {
   const N = state.players.length;
   const dealer = dealerForRound(roundIdx);
@@ -134,15 +134,14 @@ function bidOrderForRound(roundIdx) {
   return order;
 }
 
+function positionRelativeToDealer(playerIdx, dealerIdx, N) {
+  // 0 = dealer, 1 = player to dealer's left (first to bid), ..., N-1 = player to dealer's right (bids just before dealer)
+  return (playerIdx - dealerIdx + N) % N;
+}
+
 function totals() {
   const t = state.players.map(() => 0);
   for (const r of state.history) for (let i = 0; i < t.length; i++) t[i] += r.deltas[i];
-  return t;
-}
-
-function totalsAfter(historySlice) {
-  const t = state.players.map(() => 0);
-  for (const r of historySlice) for (let i = 0; i < t.length; i++) t[i] += r.deltas[i];
   return t;
 }
 
@@ -161,23 +160,29 @@ function renderGame() {
   $('dealer-name').textContent = state.players[dealerIdx];
 
   const table = $('game-table');
-  const N = state.players.length;
 
-  // Header
-  let html = '<thead><tr><th class="round-cell">Round</th>';
+  // Header row
+  let header = '<tr><th class="round-cell">Round</th>';
   state.players.forEach((p, i) => {
     const isDealer = i === dealerIdx;
-    html += `<th class="${isDealer ? 'dealer-col' : ''}">${escapeHtml(p)}${isDealer ? '<div class="dealer-pill">DEALER</div>' : ''}</th>`;
+    header += `<th class="${isDealer ? 'dealer-col' : ''}">${escapeHtml(p)}${isDealer ? '<div class="dealer-pill">DEALER</div>' : ''}</th>`;
   });
-  html += '</tr></thead><tbody>';
+  header += '</tr>';
+
+  let html = '<thead>' + header + '</thead><tbody>';
 
   // Historical rounds
   state.history.forEach((r, ri) => {
     const rTrump = SUITS.find(s => s.name === r.trump);
     const rDealer = dealerForRound(ri);
+    const bidSum = r.bids.reduce((a, b) => a + b, 0);
+    const diff = bidSum - r.cards;
+    const diffCls = diff > 0 ? 'over' : (diff < 0 ? 'under' : '');
+    const diffStr = diff === 0 ? '=cards' : (diff > 0 ? `+${diff}` : `${diff}`);
     html += `<tr><td class="round-cell">
       <div><span class="cards-num">${r.cards}</span><span class="trump-sym ${rTrump.cls}">${rTrump.sym}</span></div>
       <small>R${ri + 1}</small>
+      <span class="round-bidsum ${diffCls}">bids ${bidSum} (${diffStr})</span>
     </td>`;
     state.players.forEach((p, pi) => {
       const ok = r.bids[pi] === r.actuals[pi];
@@ -196,12 +201,15 @@ function renderGame() {
   });
 
   // Current round
-  const order = bidOrderForRound(idx);
-  const lastBidderIdx = order[order.length - 1]; // = dealer
   const curTotals = totals();
+  const curBidSum = state.pendingBids.reduce((a, b) => a + (b ?? 0), 0);
+  const curDiff = curBidSum - cards;
+  const curDiffCls = curDiff > 0 ? 'over' : (curDiff < 0 ? 'under' : 'even');
+  const curDiffStr = curDiff === 0 ? '=cards' : (curDiff > 0 ? `+${curDiff}` : `${curDiff}`);
   html += `<tr class="current-row"><td class="round-cell">
     <div><span class="cards-num">${cards}</span><span class="trump-sym ${trump.cls}">${trump.sym}</span></div>
     <small>R${idx + 1} (now)</small>
+    <span class="round-bidsum ${curDiffCls}">bids ${curBidSum} (${curDiffStr})</span>
   </td>`;
   state.players.forEach((p, pi) => {
     const isDealer = pi === dealerIdx;
@@ -234,15 +242,26 @@ function renderGame() {
     html += `<td class="${isDealer ? 'dealer-col' : ''}">${cell}</td>`;
   });
   html += '</tr></tbody>';
+
+  // Sticky footer = repeat of header
+  html += '<tfoot>' + header.replace(/<th /g, '<td ').replace(/<\/th>/g, '</td>') + '</tfoot>';
+
   table.innerHTML = html;
+
+  // Bid summary in header
+  updateHeaderSummary();
 
   // Bind inputs
   table.querySelectorAll('input[data-bid]').forEach((inp) => {
     inp.addEventListener('focus', () => { inp.select(); updateBidWarning(inp); });
     inp.addEventListener('input', () => {
       const raw = inp.value.trim();
-      state.pendingBids[+inp.dataset.bid] = raw === '' ? null : clampInt(raw, 0, cards);
+      let v = raw === '' ? null : clampInt(raw, 0, cards);
+      // Hard cap: prevent typing above max
+      if (v != null && v > cards) { v = cards; inp.value = cards; }
+      state.pendingBids[+inp.dataset.bid] = v;
       updateBidWarning(inp);
+      updateRoundBidSum();
       saveActive();
     });
     inp.addEventListener('blur', () => updateBidWarning(null));
@@ -252,8 +271,9 @@ function renderGame() {
     inp.addEventListener('input', () => {
       const pi = +inp.dataset.actual;
       const raw = inp.value.trim();
-      state.pendingActuals[pi] = raw === '' ? null : clampInt(raw, 0, cards);
-      // In-place update — don't re-render or we lose focus/cursor
+      let v = raw === '' ? null : clampInt(raw, 0, cards);
+      if (v != null && v > cards) { v = cards; inp.value = cards; }
+      state.pendingActuals[pi] = v;
       updateActualCell(pi);
       updateBidWarning(null);
       saveActive();
@@ -263,6 +283,38 @@ function renderGame() {
   $('lock-bids').classList.toggle('hidden', state.phase !== 'bidding');
   $('commit-round').classList.toggle('hidden', state.phase !== 'playing');
   updateBidWarning(null);
+  startTimer();
+}
+
+function updateRoundBidSum() {
+  const tbl = $('game-table');
+  const cell = tbl.querySelector('.current-row .round-cell .round-bidsum');
+  if (!cell) return;
+  const cards = state.rounds[state.currentRound];
+  const sum = state.pendingBids.reduce((a, b) => a + (b ?? 0), 0);
+  const diff = sum - cards;
+  const diffCls = diff > 0 ? 'over' : (diff < 0 ? 'under' : 'even');
+  const diffStr = diff === 0 ? '=cards' : (diff > 0 ? `+${diff}` : `${diff}`);
+  cell.className = 'round-bidsum ' + diffCls;
+  cell.textContent = `bids ${sum} (${diffStr})`;
+  updateHeaderSummary();
+}
+
+function updateHeaderSummary() {
+  const cards = state.rounds[state.currentRound];
+  const bs = $('bid-summary');
+  if (state.phase === 'bidding') {
+    const sum = state.pendingBids.reduce((a, b) => a + (b ?? 0), 0);
+    const diff = sum - cards;
+    const cls = diff > 0 ? 'over' : (diff < 0 ? 'under' : 'even');
+    const label = diff === 0 ? '=cards' : (diff > 0 ? `over by ${diff}` : `under by ${-diff}`);
+    bs.className = 'bid-summary ' + cls;
+    bs.textContent = `Bids: ${sum} (${label})`;
+  } else {
+    const sum = state.pendingActuals.reduce((a, b) => a + (b ?? 0), 0);
+    bs.className = 'bid-summary';
+    bs.textContent = `Tricks: ${sum}/${cards}`;
+  }
 }
 
 function scoreFor(bid, actual) {
@@ -270,8 +322,6 @@ function scoreFor(bid, actual) {
   return -Math.abs(actual - bid);
 }
 
-// In-place update of one player's current-row cell during 'playing' phase
-// (avoids re-rendering the whole table so focus/cursor stays put)
 function updateActualCell(pi) {
   const tbl = $('game-table');
   const supEl = tbl.querySelector(`sup[data-sup="${pi}"]`);
@@ -296,6 +346,7 @@ function updateActualCell(pi) {
   supEl.classList.toggle('pos', delta >= 0);
   supEl.classList.toggle('neg', delta < 0);
   totEl.textContent = curTotals[pi] + delta;
+  updateHeaderSummary();
 }
 
 function updateBidWarning(focusedInput) {
@@ -331,11 +382,31 @@ function updateBidWarning(focusedInput) {
   }
 }
 
+// -------- Timer --------
+function startTimer() {
+  stopTimer();
+  if (!state.roundStartedAt) state.roundStartedAt = Date.now();
+  const el = $('round-timer');
+  function tick() {
+    const ms = Date.now() - state.roundStartedAt;
+    el.textContent = '⏱ ' + formatDuration(ms);
+  }
+  tick();
+  timerInterval = setInterval(tick, 1000);
+}
+function stopTimer() { if (timerInterval) { clearInterval(timerInterval); timerInterval = null; } }
+function formatDuration(ms) {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+  if (h > 0) return `${h}:${String(m % 60).padStart(2,'0')}:${String(s % 60).padStart(2,'0')}`;
+  return `${m}:${String(s % 60).padStart(2,'0')}`;
+}
+
+// -------- Lock / Commit / Undo --------
 function lockBids() {
   const cards = state.rounds[state.currentRound];
-  // Replace nulls with 0 before validation
-  state.pendingBids = state.pendingBids.map(b => b == null ? 0 : b);
-  for (const b of state.pendingBids) if (b < 0 || b > cards) { alert('Bid out of range'); return; }
+  state.pendingBids = state.pendingBids.map(b => b == null ? 0 : Math.min(b, cards));
   const order = bidOrderForRound(state.currentRound);
   const lastBidderIdx = order[order.length - 1];
   const sum = state.pendingBids.reduce((a, b) => a + b, 0);
@@ -350,7 +421,7 @@ function lockBids() {
 
 function commitRound() {
   const cards = state.rounds[state.currentRound];
-  state.pendingActuals = state.pendingActuals.map(a => a == null ? 0 : a);
+  state.pendingActuals = state.pendingActuals.map(a => a == null ? 0 : Math.min(a, cards));
   const sum = state.pendingActuals.reduce((a, b) => a + b, 0);
   if (sum !== cards) {
     if (!confirm(`Tricks won total ${sum} but there are ${cards} cards. Save anyway?`)) return;
@@ -358,6 +429,9 @@ function commitRound() {
   const deltas = state.pendingBids.map((b, i) => scoreFor(b, state.pendingActuals[i]));
   const prev = state.history.length ? state.history[state.history.length - 1].totals : state.players.map(() => 0);
   const newTotals = prev.map((t, i) => t + deltas[i]);
+  const now = Date.now();
+  const duration = state.roundStartedAt ? (now - state.roundStartedAt) : 0;
+  state.roundDurations.push(duration);
   state.history.push({
     cards,
     trump: trumpFor(state.currentRound).name,
@@ -366,11 +440,13 @@ function commitRound() {
     actuals: [...state.pendingActuals],
     deltas,
     totals: newTotals,
+    durationMs: duration,
   });
   state.currentRound += 1;
   state.phase = 'bidding';
   state.pendingBids = state.players.map(() => null);
   state.pendingActuals = state.players.map(() => null);
+  state.roundStartedAt = now; // next round timer starts from "scored"
   saveActive();
   if (state.currentRound >= state.rounds.length) {
     finishGame();
@@ -389,22 +465,172 @@ function undoLastRound() {
   if (state.history.length === 0) return;
   if (!confirm('Undo last completed round?')) return;
   const last = state.history.pop();
+  state.roundDurations.pop();
   state.currentRound -= 1;
   state.pendingBids = [...last.bids];
   state.pendingActuals = [...last.actuals];
   state.phase = 'bidding';
+  state.roundStartedAt = Date.now();
   saveActive();
   renderGame();
 }
 
+// -------- Quick entry modal --------
+let modalCtx = null;
+
+function openQuickEntry() {
+  if (state.phase !== 'bidding') {
+    alert('Quick entry is only for bidding. Use the table to score tricks.');
+    return;
+  }
+  // Order: player to the LEFT of dealer first → dealer last
+  const order = bidOrderForRound(state.currentRound);
+  modalCtx = { order, step: 0 };
+  $('modal-backdrop').classList.remove('hidden');
+  renderModal();
+}
+
+function closeModal() {
+  $('modal-backdrop').classList.add('hidden');
+  modalCtx = null;
+  renderGame();
+}
+
+function renderModal() {
+  if (!modalCtx) return;
+  const { order, step } = modalCtx;
+  const cards = state.rounds[state.currentRound];
+  const dealerIdx = dealerForRound(state.currentRound);
+  const N = state.players.length;
+  const playerIdx = order[step];
+  const isLast = step === order.length - 1;
+
+  $('modal-title').textContent = `Round ${state.currentRound + 1} bids · ${cards} cards · ${trumpFor(state.currentRound).sym} trump`;
+  $('modal-sub').textContent = `Bid ${step + 1} of ${order.length}`;
+  $('modal-player').textContent = state.players[playerIdx];
+  const pos = positionRelativeToDealer(playerIdx, dealerIdx, N);
+  let posLabel;
+  if (pos === 0) posLabel = 'DEALER (bids last)';
+  else if (pos === 1) posLabel = '1st to bid · left of dealer';
+  else if (pos === N - 1) posLabel = `${pos}${ord(pos)} to bid · right of dealer`;
+  else posLabel = `${pos}${ord(pos)} to bid`;
+  $('modal-position').textContent = posLabel;
+
+  const cur = state.pendingBids[playerIdx];
+  const inp = $('modal-input');
+  inp.max = cards;
+  inp.value = cur == null ? '' : cur;
+  // Focus and select
+  setTimeout(() => { inp.focus(); inp.select(); }, 50);
+
+  // Build numeric pad 0..cards
+  const pad = $('modal-pad');
+  pad.innerHTML = '';
+  let forbidden = -1;
+  if (isLast) {
+    const otherSum = state.pendingBids.reduce((a, b, i) => i === playerIdx ? a : a + (b ?? 0), 0);
+    forbidden = cards - otherSum;
+  }
+  for (let n = 0; n <= cards; n++) {
+    const btn = document.createElement('button');
+    btn.textContent = n;
+    btn.type = 'button';
+    if (n === forbidden) btn.classList.add('disabled');
+    if (cur === n) btn.classList.add('selected');
+    btn.addEventListener('click', () => {
+      if (n === forbidden) return;
+      state.pendingBids[playerIdx] = n;
+      inp.value = n;
+      saveActive();
+      // Update selected highlight
+      pad.querySelectorAll('button').forEach(b => b.classList.remove('selected'));
+      btn.classList.add('selected');
+      // Auto-advance after short delay (mobile friendly)
+      modalNext();
+    });
+    pad.appendChild(btn);
+  }
+
+  // Hint
+  const hint = $('modal-hint');
+  if (isLast) {
+    const otherSum = state.pendingBids.reduce((a, b, i) => i === playerIdx ? a : a + (b ?? 0), 0);
+    const forb = cards - otherSum;
+    if (forb >= 0 && forb <= cards) {
+      hint.className = 'modal-hint';
+      hint.textContent = `⚠️ Dealer cannot bid ${forb} (others bid ${otherSum}, would total ${cards}).`;
+    } else {
+      hint.className = 'modal-hint info';
+      hint.textContent = `Others bid ${otherSum} — any 0–${cards} allowed.`;
+    }
+  } else {
+    hint.className = 'modal-hint info';
+    hint.textContent = '';
+  }
+
+  $('modal-back').disabled = step === 0;
+  $('modal-next').textContent = isLast ? '✓ Finish bids' : 'Next →';
+}
+
+function ord(n) {
+  const s = ['th','st','nd','rd'], v = n % 100;
+  return s[(v - 20) % 10] || s[v] || s[0];
+}
+
+function modalCommitInput() {
+  if (!modalCtx) return true;
+  const { order, step } = modalCtx;
+  const playerIdx = order[step];
+  const isLast = step === order.length - 1;
+  const cards = state.rounds[state.currentRound];
+  const raw = $('modal-input').value.trim();
+  if (raw === '') { state.pendingBids[playerIdx] = 0; }
+  else {
+    let v = clampInt(raw, 0, cards);
+    if (isLast) {
+      const otherSum = state.pendingBids.reduce((a, b, i) => i === playerIdx ? a : a + (b ?? 0), 0);
+      const forb = cards - otherSum;
+      if (v === forb) {
+        $('modal-hint').className = 'modal-hint';
+        $('modal-hint').textContent = `⚠️ Dealer can't bid ${forb}. Pick a different number.`;
+        return false;
+      }
+    }
+    state.pendingBids[playerIdx] = v;
+  }
+  saveActive();
+  return true;
+}
+
+function modalNext() {
+  if (!modalCtx) return;
+  if (!modalCommitInput()) return;
+  if (modalCtx.step === modalCtx.order.length - 1) {
+    // Finish — go into playing phase
+    closeModal();
+    lockBids();
+    return;
+  }
+  modalCtx.step += 1;
+  renderModal();
+}
+
+function modalBack() {
+  if (!modalCtx || modalCtx.step === 0) return;
+  modalCtx.step -= 1;
+  renderModal();
+}
+
 // -------- Finish / Summary --------
 function finishGame() {
+  stopTimer();
   const finished = { ...state, finishedAt: new Date().toISOString() };
   const list = loadHistory();
   list.unshift(finished);
   STORE.setItem(STORAGE_KEY, JSON.stringify(list));
   STORE.removeItem(ACTIVE_KEY);
   state = finished;
+  viewingShared = false;
   renderSummary(finished);
   showView('summary');
 }
@@ -419,7 +645,11 @@ function renderSummary(game) {
   const ranked = game.players.map((p, i) => ({ name: p, score: totals[i], idx: i }))
     .sort((a, b) => b.score - a.score);
   const winner = ranked[0];
-  $('winner-banner').innerHTML = `🏆 Winner: <b>${escapeHtml(winner.name)}</b> with ${winner.score} points`;
+  $('winner-banner').innerHTML = `🏆 Winner: <b>${escapeHtml(winner.name)}</b> with ${winner.score} points` +
+    (viewingShared ? '<div style="font-size:.85rem;margin-top:.3rem;opacity:.9">📤 Shared game (read-only)</div>' : '');
+
+  // Share row
+  $('share-row').classList.toggle('hidden', viewingShared);
 
   if (chartInstance) chartInstance.destroy();
   const labels = ['Start', ...game.history.map((_, i) => `R${i + 1}`)];
@@ -453,34 +683,111 @@ function renderSummary(game) {
 
   const ft = $('final-table');
   ft.innerHTML = `
-    <thead><tr><th>Rank</th><th>Player</th><th>Score</th><th>Correct bids</th><th>Best round</th></tr></thead>
+    <thead><tr><th>Rank</th><th>Player</th><th>Score</th><th>Correct bids</th><th>Best streak</th><th>Best/Worst round</th></tr></thead>
     <tbody>
       ${ranked.map((r, i) => {
-        const correct = game.history.filter(h => h.bids[r.idx] === h.actuals[r.idx]).length;
-        const best = game.history.reduce((m, h) => Math.max(m, h.deltas[r.idx]), -Infinity);
+        const ph = game.history.map(h => h.bids[r.idx] === h.actuals[r.idx]);
+        const correct = ph.filter(Boolean).length;
+        const streakHit = longestRun(ph, true);
+        const streakMiss = longestRun(ph, false);
+        const best = game.history.length ? game.history.reduce((m, h) => Math.max(m, h.deltas[r.idx]), -Infinity) : 0;
+        const worst = game.history.length ? game.history.reduce((m, h) => Math.min(m, h.deltas[r.idx]), Infinity) : 0;
         return `<tr>
           <td>${i + 1}</td>
           <td>${escapeHtml(r.name)}</td>
           <td><b>${r.score}</b></td>
           <td>${correct} / ${game.history.length}</td>
-          <td>${best === -Infinity ? '—' : (best >= 0 ? '+' : '') + best}</td>
+          <td>✓${streakHit} / ✗${streakMiss}</td>
+          <td>${best === -Infinity ? '—' : (best >= 0 ? '+' : '') + best} / ${worst === Infinity ? '—' : (worst >= 0 ? '+' : '') + worst}</td>
         </tr>`;
       }).join('')}
     </tbody>`;
+
+  renderPositionStats(game);
+}
+
+function longestRun(arr, val) {
+  let best = 0, cur = 0;
+  for (const v of arr) { if (v === val) { cur++; if (cur > best) best = cur; } else cur = 0; }
+  return best;
+}
+
+function renderPositionStats(game) {
+  const N = game.players.length;
+  // Aggregate scores by position relative to dealer for that round
+  // position 0 = dealer, 1 = left of dealer (first bidder), ..., N-1 = right of dealer (bids before dealer)
+  const posStats = Array.from({ length: N }, () => ({ delta: 0, correct: 0, total: 0 }));
+  game.history.forEach((h, ri) => {
+    const dealer = (game.firstDealer + ri) % N;
+    for (let pi = 0; pi < N; pi++) {
+      const pos = (pi - dealer + N) % N;
+      posStats[pos].delta += h.deltas[pi];
+      posStats[pos].total += 1;
+      if (h.bids[pi] === h.actuals[pi]) posStats[pos].correct += 1;
+    }
+  });
+
+  const labels = posStats.map((_, p) => {
+    if (p === 0) return 'Dealer';
+    if (p === 1) return 'Left of dealer (first bid)';
+    if (p === N - 1) return 'Right of dealer (bids before dealer)';
+    return `${p}${ord(p)} to bid`;
+  });
+
+  // Rank by avg points per round
+  const ranked = posStats.map((s, p) => ({
+    p,
+    label: labels[p],
+    avg: s.total ? s.delta / s.total : 0,
+    acc: s.total ? s.correct / s.total : 0,
+    total: s.delta,
+    rounds: s.total,
+  })).sort((a, b) => b.avg - a.avg);
+
+  const wrap = $('position-stats');
+  wrap.innerHTML = `<h3>Position vs dealer · easiest → hardest (avg points/round)</h3>
+    <div class="position-list">
+      ${ranked.map((r, i) => `<div class="position-row">
+        <span class="pos-label">#${i + 1} ${escapeHtml(r.label)}</span>
+        <span>avg ${(r.avg >= 0 ? '+' : '') + r.avg.toFixed(1)} pts</span>
+        <span>${Math.round(r.acc * 100)}% hit</span>
+        <span class="pos-value">${(r.total >= 0 ? '+' : '') + r.total}</span>
+      </div>`).join('')}
+    </div>`;
 }
 
 function computeStats(game) {
   const stats = [];
   const rounds = game.history.length;
   if (!rounds) return [{ label: 'Rounds played', value: 0 }];
+  const N = game.players.length;
 
+  // Most accurate
   const accuracy = game.players.map((p, i) => ({
-    name: p,
-    correct: game.history.filter(h => h.bids[i] === h.actuals[i]).length,
+    name: p, correct: game.history.filter(h => h.bids[i] === h.actuals[i]).length,
   }));
   accuracy.sort((a, b) => b.correct - a.correct);
   stats.push({ label: 'Most accurate', value: `${accuracy[0].name} (${accuracy[0].correct}/${rounds})` });
 
+  // Best streak (win)
+  let bestStreak = { name: '—', n: 0 };
+  for (let pi = 0; pi < N; pi++) {
+    const arr = game.history.map(h => h.bids[pi] === h.actuals[pi]);
+    const run = longestRun(arr, true);
+    if (run > bestStreak.n) bestStreak = { name: game.players[pi], n: run };
+  }
+  stats.push({ label: 'Best hit streak', value: `${bestStreak.name} ×${bestStreak.n}` });
+
+  // Worst streak (miss)
+  let worstStreak = { name: '—', n: 0 };
+  for (let pi = 0; pi < N; pi++) {
+    const arr = game.history.map(h => h.bids[pi] === h.actuals[pi]);
+    const run = longestRun(arr, false);
+    if (run > worstStreak.n) worstStreak = { name: game.players[pi], n: run };
+  }
+  stats.push({ label: 'Worst miss streak', value: `${worstStreak.name} ×${worstStreak.n}` });
+
+  // Biggest / worst round
   let bigDelta = { name: '—', delta: -Infinity, round: 0 };
   game.history.forEach((h, ri) => h.deltas.forEach((d, pi) => {
     if (d > bigDelta.delta) bigDelta = { name: game.players[pi], delta: d, round: ri + 1 };
@@ -493,10 +800,12 @@ function computeStats(game) {
   }));
   stats.push({ label: 'Worst round', value: `${worstDelta.name} ${worstDelta.delta} (R${worstDelta.round})` });
 
+  // Net over/under bid
   const totalBids = game.history.reduce((a, h) => a + h.bids.reduce((x, y) => x + y, 0), 0);
   const totalCards = game.history.reduce((a, h) => a + h.cards, 0);
   stats.push({ label: 'Net over/under-bid', value: `${(totalBids - totalCards >= 0 ? '+' : '')}${(totalBids - totalCards)} tricks` });
 
+  // Lead changes
   let leadChanges = 0, lastLead = -1;
   game.history.forEach(h => {
     let leader = 0;
@@ -506,12 +815,96 @@ function computeStats(game) {
   });
   stats.push({ label: 'Lead changes', value: leadChanges });
 
-  stats.push({ label: 'Rounds played', value: rounds });
+  // Time stats
+  const durations = (game.roundDurations || []).filter(d => d > 0);
+  if (durations.length) {
+    const totalMs = durations.reduce((a, b) => a + b, 0);
+    const avgMs = totalMs / durations.length;
+    const maxMs = Math.max(...durations);
+    const minMs = Math.min(...durations);
+    stats.push({ label: 'Total time', value: formatDuration(totalMs) });
+    stats.push({ label: 'Avg / round', value: formatDuration(avgMs) });
+    stats.push({ label: 'Fastest / slowest', value: `${formatDuration(minMs)} / ${formatDuration(maxMs)}` });
+  }
 
+  stats.push({ label: 'Rounds played', value: rounds });
   return stats;
 }
 
-// -------- History view --------
+// -------- Share --------
+async function copyShareLink() {
+  if (!state) return;
+  const slim = {
+    v: 1,
+    p: state.players,
+    s: state.startCards,
+    d: state.direction,
+    fd: state.firstDealer,
+    h: state.history.map(h => ({ c: h.cards, b: h.bids, a: h.actuals, dur: h.durationMs || 0 })),
+    sa: state.startedAt,
+    fa: state.finishedAt,
+  };
+  const json = JSON.stringify(slim);
+  const b64 = btoa(unescape(encodeURIComponent(json)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const url = `${location.origin}${location.pathname}#g=${b64}`;
+  const status = $('share-status');
+  try {
+    await navigator.clipboard.writeText(url);
+    status.textContent = '✓ Link copied!';
+  } catch {
+    prompt('Copy this link:', url);
+    status.textContent = '';
+  }
+  setTimeout(() => { status.textContent = ''; }, 3000);
+}
+
+function loadSharedFromHash() {
+  const m = location.hash.match(/g=([A-Za-z0-9_\-]+)/);
+  if (!m) return false;
+  try {
+    let b64 = m[1].replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    const json = decodeURIComponent(escape(atob(b64)));
+    const slim = JSON.parse(json);
+    if (!slim || !slim.p || !slim.h) return false;
+    const N = slim.p.length;
+    // Reconstruct full game
+    const history = [];
+    const totals = slim.p.map(() => 0);
+    slim.h.forEach((h, ri) => {
+      const cards = h.c;
+      const trump = SUITS[ri % SUITS.length];
+      const deltas = h.b.map((b, i) => scoreFor(b, h.a[i]));
+      for (let i = 0; i < N; i++) totals[i] += deltas[i];
+      history.push({
+        cards, trump: trump.name, trumpSym: trump.sym,
+        bids: h.b, actuals: h.a, deltas, totals: [...totals], durationMs: h.dur || 0,
+      });
+    });
+    state = {
+      players: slim.p,
+      startCards: slim.s,
+      direction: slim.d,
+      firstDealer: slim.fd,
+      history,
+      currentRound: history.length,
+      rounds: buildRoundsList(slim.s, slim.d),
+      startedAt: slim.sa,
+      finishedAt: slim.fa,
+      roundDurations: history.map(h => h.durationMs || 0),
+    };
+    viewingShared = true;
+    renderSummary(state);
+    showView('summary');
+    return true;
+  } catch (e) {
+    console.warn('Bad share hash', e);
+    return false;
+  }
+}
+
+// -------- History --------
 function loadHistory() {
   try { return JSON.parse(STORE.getItem(STORAGE_KEY) || '[]'); }
   catch { return []; }
@@ -520,19 +913,22 @@ function loadHistory() {
 function renderHistory() {
   const list = $('history-list');
   const games = loadHistory();
-  if (!games.length) { list.innerHTML = '<p style="color:var(--muted)">No games saved this session yet.</p>'; return; }
+  if (!games.length) { list.innerHTML = '<p style="color:var(--muted)">No games saved yet.</p>'; return; }
   list.innerHTML = '';
   games.forEach((g, idx) => {
     const totals = g.history.length ? g.history[g.history.length - 1].totals : g.players.map(() => 0);
     const ranked = g.players.map((p, i) => ({ name: p, score: totals[i] })).sort((a, b) => b.score - a.score);
     const card = document.createElement('div');
     card.className = 'history-card';
+    const durations = (g.roundDurations || []).filter(d => d > 0);
+    const totalMs = durations.reduce((a, b) => a + b, 0);
     card.innerHTML = `
       <div>
         <h4>${escapeHtml(ranked[0].name)} won (${ranked[0].score})</h4>
         <div class="history-meta">
           ${new Date(g.startedAt).toLocaleString()} ·
           ${g.players.length} players · ${g.history.length} rounds
+          ${totalMs ? ' · ' + formatDuration(totalMs) : ''}
         </div>
       </div>
       <button class="secondary" data-view="${idx}">View</button>
@@ -542,8 +938,9 @@ function renderHistory() {
   list.querySelectorAll('button[data-view]').forEach(b => b.addEventListener('click', () => {
     const idx = +b.dataset.view;
     state = games[idx];
-    // Ensure firstDealer exists on legacy entries
     if (state.firstDealer == null) state.firstDealer = 0;
+    if (!state.roundDurations) state.roundDurations = [];
+    viewingShared = false;
     renderSummary(state);
     showView('summary');
   }));
@@ -559,25 +956,42 @@ function showView(name) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   if (name === 'history') $('nav-history').classList.add('active');
   else if (name === 'setup') $('nav-new').classList.add('active');
+  if (name !== 'game') stopTimer();
 }
 
 // -------- Init --------
 function init() {
   $('setup-players').addEventListener('input', renderPlayerNames);
+  $('setup-start').addEventListener('input', () => { $('setup-start').dataset.userSet = '1'; });
   renderPlayerNames();
   $('start-game').addEventListener('click', startGame);
   $('lock-bids').addEventListener('click', lockBids);
   $('commit-round').addEventListener('click', commitRound);
   $('undo-round').addEventListener('click', undoLastRound);
   $('end-game-btn').addEventListener('click', endGameEarly);
-  $('play-again').addEventListener('click', () => { state = null; STORE.removeItem(ACTIVE_KEY); showView('setup'); });
+  $('quick-entry-btn').addEventListener('click', openQuickEntry);
+  $('modal-close').addEventListener('click', closeModal);
+  $('modal-next').addEventListener('click', modalNext);
+  $('modal-back').addEventListener('click', modalBack);
+  $('modal-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); modalNext(); }
+  });
+  $('share-game-btn').addEventListener('click', copyShareLink);
+
+  $('play-again').addEventListener('click', () => {
+    state = null; STORE.removeItem(ACTIVE_KEY); viewingShared = false;
+    history.replaceState(null, '', location.pathname);
+    showView('setup');
+  });
   $('view-history-btn').addEventListener('click', () => { renderHistory(); showView('history'); });
   $('nav-new').addEventListener('click', () => {
-    if (state && state.history && state.currentRound < state.rounds.length) {
+    if (state && state.history && state.currentRound < state.rounds.length && !viewingShared) {
       if (!confirm('Abandon current game?')) return;
       STORE.removeItem(ACTIVE_KEY);
       state = null;
     }
+    history.replaceState(null, '', location.pathname);
+    viewingShared = false;
     showView('setup');
   });
   $('nav-history').addEventListener('click', () => { renderHistory(); showView('history'); });
@@ -585,11 +999,16 @@ function init() {
     if (confirm('Clear all saved games?')) { STORE.removeItem(STORAGE_KEY); renderHistory(); }
   });
 
+  // Shared game via URL hash takes priority
+  if (loadSharedFromHash()) return;
+
   const active = STORE.getItem(ACTIVE_KEY);
   if (active) {
     try {
       state = JSON.parse(active);
       if (state && state.currentRound < state.rounds.length) {
+        if (!state.roundDurations) state.roundDurations = [];
+        if (!state.roundStartedAt) state.roundStartedAt = Date.now();
         showView('game');
         renderGame();
         return;
