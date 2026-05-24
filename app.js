@@ -649,7 +649,9 @@ function renderSummary(game) {
     (viewingShared ? '<div style="font-size:.85rem;margin-top:.3rem;opacity:.9">📤 Shared game (read-only)</div>' : '');
 
   // Share row
-  $('share-row').classList.toggle('hidden', viewingShared);
+  $('share-row').classList.toggle('hidden', false);
+  $('share-game-btn').textContent = viewingShared ? '🔗 Copy shareable link' : '🔗 Copy shareable link';
+  $('import-shared-btn').classList.toggle('hidden', !viewingShared);
 
   if (chartInstance) chartInstance.destroy();
   const labels = ['Start', ...game.history.map((_, i) => `R${i + 1}`)];
@@ -704,12 +706,113 @@ function renderSummary(game) {
     </tbody>`;
 
   renderPositionStats(game);
+  renderPlayerDetail(game);
+  renderBidNumberStats(game);
 }
 
 function longestRun(arr, val) {
   let best = 0, cur = 0;
   for (const v of arr) { if (v === val) { cur++; if (cur > best) best = cur; } else cur = 0; }
   return best;
+}
+
+function renderPlayerDetail(game) {
+  const wrap = $('player-detail-block');
+  if (!game.history.length) { wrap.innerHTML = ''; return; }
+  if (game._selectedPlayer == null) game._selectedPlayer = 0;
+  const pi = game._selectedPlayer;
+  const N = game.players.length;
+
+  const tabs = game.players.map((p, i) =>
+    `<button class="player-tab ${i === pi ? 'active' : ''}" data-pi="${i}">${escapeHtml(p)}</button>`
+  ).join('');
+
+  // Per-player aggregate
+  let hits = 0, over = 0, under = 0, bestRound = -Infinity, worstRound = Infinity;
+  let bestRoundIdx = 0, worstRoundIdx = 0;
+  let totalBid = 0, totalGot = 0;
+  const hitPattern = [];
+  game.history.forEach((h, ri) => {
+    const b = h.bids[pi], a = h.actuals[pi], d = h.deltas[pi];
+    if (b === a) { hits++; hitPattern.push(true); }
+    else { hitPattern.push(false); }
+    if (b > a) over++; else if (b < a) under++;
+    if (d > bestRound) { bestRound = d; bestRoundIdx = ri; }
+    if (d < worstRound) { worstRound = d; worstRoundIdx = ri; }
+    totalBid += b; totalGot += a;
+  });
+  const rounds = game.history.length;
+  const totals = game.history[rounds - 1].totals;
+  const finalScore = totals[pi];
+  const rank = [...totals.keys()].sort((a, b) => totals[b] - totals[a]).indexOf(pi) + 1;
+  const longestHit = longestRun(hitPattern, true);
+  const longestMiss = longestRun(hitPattern, false);
+
+  // Per-round mini cells
+  const pills = game.history.map((h, ri) => {
+    const b = h.bids[pi], a = h.actuals[pi], d = h.deltas[pi];
+    const ok = b === a;
+    const tr = SUITS.find(s => s.name === h.trump);
+    return `<div class="player-round-pill">
+      <span class="pr-trump ${tr.cls}">${tr.sym}${h.cards}</span>
+      <span class="bid-result ${ok ? 'bid-correct' : 'bid-miss'}" style="width:22px;height:22px;font-size:.75rem">${b}</span>
+      <span>got ${a}</span>
+      <span class="pr-delta ${d >= 0 ? 'pos' : 'neg'}">${d >= 0 ? '+' : ''}${d}</span>
+    </div>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <h3>Per-player breakdown</h3>
+    <div class="player-tabs">${tabs}</div>
+    <div class="player-detail-grid">
+      <div class="stat-card"><div class="stat-label">Final score</div><div class="stat-value">${finalScore} (rank #${rank})</div></div>
+      <div class="stat-card"><div class="stat-label">Accuracy</div><div class="stat-value">${hits}/${rounds} (${Math.round(hits/rounds*100)}%)</div></div>
+      <div class="stat-card"><div class="stat-label">Over / Under / Exact</div><div class="stat-value">${over} / ${under} / ${hits}</div></div>
+      <div class="stat-card"><div class="stat-label">Best / worst round</div><div class="stat-value">${bestRound >= 0 ? '+' : ''}${bestRound} (R${bestRoundIdx+1}) / ${worstRound >= 0 ? '+' : ''}${worstRound} (R${worstRoundIdx+1})</div></div>
+      <div class="stat-card"><div class="stat-label">Longest streaks</div><div class="stat-value">✓${longestHit} / ✗${longestMiss}</div></div>
+      <div class="stat-card"><div class="stat-label">Total bid / got</div><div class="stat-value">${totalBid} / ${totalGot}</div></div>
+    </div>
+    <div class="player-rounds">${pills}</div>
+  `;
+  wrap.querySelectorAll('.player-tab').forEach(t => t.addEventListener('click', () => {
+    game._selectedPlayer = +t.dataset.pi;
+    renderPlayerDetail(game);
+  }));
+}
+
+function renderBidNumberStats(game) {
+  const wrap = $('bid-number-stats');
+  if (!game.history.length) { wrap.innerHTML = ''; return; }
+  // For each bid value (0..maxCards seen), accuracy across all players/rounds
+  const maxBid = Math.max(0, ...game.history.flatMap(h => h.bids));
+  const counts = Array.from({ length: maxBid + 1 }, () => ({ tries: 0, hits: 0 }));
+  game.history.forEach(h => {
+    h.bids.forEach((b, i) => {
+      counts[b].tries += 1;
+      if (b === h.actuals[i]) counts[b].hits += 1;
+    });
+  });
+  const cells = counts.map((c, b) => {
+    if (!c.tries) return `<div class="bid-acc-cell" style="opacity:.4">
+      <div class="bac-bid">${b}</div>
+      <div class="bac-pct">—</div>
+      <div class="bac-cnt">0 tries</div>
+    </div>`;
+    const pct = Math.round(c.hits / c.tries * 100);
+    return `<div class="bid-acc-cell">
+      <div class="bac-bid">${b}</div>
+      <div class="bac-pct">${pct}%</div>
+      <div class="bac-cnt">${c.hits}/${c.tries}</div>
+      <div class="bac-bar" style="width:${pct}%"></div>
+    </div>`;
+  }).join('');
+  const totalTries = counts.reduce((a, c) => a + c.tries, 0);
+  const totalHits = counts.reduce((a, c) => a + c.hits, 0);
+  const overall = totalTries ? Math.round(totalHits / totalTries * 100) : 0;
+  wrap.innerHTML = `
+    <h3>Bid success rate by number · overall ${overall}% (${totalHits}/${totalTries})</h3>
+    <div class="bid-acc-grid">${cells}</div>
+  `;
 }
 
 function renderPositionStats(game) {
@@ -827,6 +930,21 @@ function computeStats(game) {
     stats.push({ label: 'Fastest / slowest', value: `${formatDuration(minMs)} / ${formatDuration(maxMs)}` });
   }
 
+  // Over-bid vs under-bid behaviour per player
+  const overUnder = game.players.map((p, i) => {
+    let over = 0, under = 0, exact = 0;
+    game.history.forEach(h => {
+      if (h.bids[i] > h.actuals[i]) over++;
+      else if (h.bids[i] < h.actuals[i]) under++;
+      else exact++;
+    });
+    return { name: p, over, under, exact, total: game.history.length };
+  });
+  const mostOver = [...overUnder].sort((a, b) => b.over - a.over)[0];
+  const mostUnder = [...overUnder].sort((a, b) => b.under - a.under)[0];
+  if (mostOver.over > 0) stats.push({ label: 'Most over-bids', value: `${mostOver.name} (${mostOver.over}/${rounds})` });
+  if (mostUnder.under > 0) stats.push({ label: 'Most under-bids', value: `${mostUnder.name} (${mostUnder.under}/${rounds})` });
+
   stats.push({ label: 'Rounds played', value: rounds });
   return stats;
 }
@@ -851,12 +969,30 @@ async function copyShareLink() {
   const status = $('share-status');
   try {
     await navigator.clipboard.writeText(url);
-    status.textContent = '✓ Link copied!';
+    if (status) { status.textContent = '✓ Link copied!'; setTimeout(() => { status.textContent = ''; }, 3000); }
+    else alert('✓ Shareable link copied to clipboard');
   } catch {
     prompt('Copy this link:', url);
-    status.textContent = '';
   }
-  setTimeout(() => { status.textContent = ''; }, 3000);
+}
+
+function importSharedGame() {
+  if (!state || !viewingShared) return;
+  const list = loadHistory();
+  const fingerprint = (state.startedAt || '') + '|' + (state.players || []).join(',');
+  if (list.some(g => ((g.startedAt || '') + '|' + (g.players || []).join(',')) === fingerprint)) {
+    if (!confirm('Looks like you already have this game in history. Import again anyway?')) return;
+  }
+  const imported = {
+    ...state,
+    finishedAt: state.finishedAt || new Date().toISOString(),
+    imported: true,
+  };
+  list.unshift(imported);
+  STORE.setItem(STORAGE_KEY, JSON.stringify(list));
+  const s = $('share-status');
+  s.textContent = '✓ Imported to history';
+  setTimeout(() => { s.textContent = ''; }, 3000);
 }
 
 function loadSharedFromHash() {
@@ -977,6 +1113,8 @@ function init() {
     if (e.key === 'Enter') { e.preventDefault(); modalNext(); }
   });
   $('share-game-btn').addEventListener('click', copyShareLink);
+  $('share-mid-btn').addEventListener('click', copyShareLink);
+  $('import-shared-btn').addEventListener('click', importSharedGame);
 
   $('play-again').addEventListener('click', () => {
     state = null; STORE.removeItem(ACTIVE_KEY); viewingShared = false;
