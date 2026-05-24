@@ -253,7 +253,8 @@ function renderGame() {
 
   // Bind inputs
   table.querySelectorAll('input[data-bid]').forEach((inp) => {
-    inp.addEventListener('focus', () => { inp.select(); updateBidWarning(inp); });
+    inp.addEventListener('focus', () => { selectAllValue(inp); updateBidWarning(inp); });
+    inp.addEventListener('click', () => selectAllValue(inp));
     inp.addEventListener('input', () => {
       const raw = inp.value.trim();
       let v = raw === '' ? null : clampInt(raw, 0, cards);
@@ -267,7 +268,8 @@ function renderGame() {
     inp.addEventListener('blur', () => updateBidWarning(null));
   });
   table.querySelectorAll('input[data-actual]').forEach((inp) => {
-    inp.addEventListener('focus', () => inp.select());
+    inp.addEventListener('focus', () => selectAllValue(inp));
+    inp.addEventListener('click', () => selectAllValue(inp));
     inp.addEventListener('input', () => {
       const pi = +inp.dataset.actual;
       const raw = inp.value.trim();
@@ -314,6 +316,20 @@ function updateHeaderSummary() {
     const sum = state.pendingActuals.reduce((a, b) => a + (b ?? 0), 0);
     bs.className = 'bid-summary';
     bs.textContent = `Tricks: ${sum}/${cards}`;
+  }
+}
+
+// iOS Safari ignores .select() on type=number, so switch to text briefly to select.
+function selectAllValue(inp) {
+  try {
+    const v = inp.value;
+    if (v === '' || v == null) return;
+    const orig = inp.type;
+    if (orig === 'number') inp.type = 'text';
+    inp.setSelectionRange(0, String(v).length);
+    if (orig === 'number') inp.type = orig;
+  } catch {
+    try { inp.select(); } catch {}
   }
 }
 
@@ -1247,6 +1263,13 @@ function init() {
       if (state && state.currentRound < state.rounds.length) {
         if (!state.roundDurations) state.roundDurations = [];
         if (!state.roundStartedAt) state.roundStartedAt = Date.now();
+        // Normalize legacy 0-defaults so inputs render empty
+        if (Array.isArray(state.pendingBids) && state.phase === 'bidding') {
+          state.pendingBids = state.pendingBids.map(b => b === 0 ? null : b);
+        }
+        if (Array.isArray(state.pendingActuals) && state.phase === 'playing') {
+          state.pendingActuals = state.pendingActuals.map(a => a === 0 ? null : a);
+        }
         showView('game');
         renderGame();
         return;
