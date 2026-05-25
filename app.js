@@ -924,7 +924,10 @@ function renderPlayerDetail(game) {
     `<button class="player-tab ${i === pi ? 'active' : ''}" data-pi="${i}">${escapeHtml(p)}</button>`
   ).join('');
 
-  // Per-player aggregate
+  const adv = computePlayerAdvanced(game, pi);
+  const tips = generatePlayerTips(game, pi, adv);
+
+  // Per-player aggregate (existing summary)
   let hits = 0, over = 0, under = 0, bestRound = -Infinity, worstRound = Infinity;
   let bestRoundIdx = 0, worstRoundIdx = 0;
   let totalBid = 0, totalGot = 0;
@@ -949,7 +952,9 @@ function renderPlayerDetail(game) {
   const pills = game.history.map((h, ri) => {
     const b = h.bids[pi], a = h.actuals[pi], d = h.deltas[pi];
     const ok = b === a;
-    const tr = SUITS.find(s => s.name === h.trump);
+    const tr = SUITS.find(s => s.name === h.trump)
+      || SUITS.find(s => s.sym === h.trumpSym)
+      || { sym: h.trumpSym || '?', cls: 'suit-nt' };
     return `<div class="player-round-pill">
       <span class="pr-trump ${tr.cls}">${tr.sym}${h.cards}</span>
       <span class="bid-result ${ok ? 'bid-correct' : 'bid-miss'}" style="width:22px;height:22px;font-size:.75rem">${b}</span>
@@ -957,6 +962,18 @@ function renderPlayerDetail(game) {
       <span class="pr-delta ${d >= 0 ? 'pos' : 'neg'}">${d >= 0 ? '+' : ''}${d}</span>
     </div>`;
   }).join('');
+
+  // Advanced stat cards
+  const trumpRows = adv.byTrump.length ? adv.byTrump.map(t => {
+    const cls = (SUITS.find(s => s.name === t.name) || {}).cls || 'suit-nt';
+    const sym = (SUITS.find(s => s.name === t.name) || {}).sym || t.name;
+    return `<span class="mini-tag"><b class="${cls}">${sym}</b> ${t.hits}/${t.tries} · ${(t.avg>=0?'+':'')}${t.avg.toFixed(1)}</span>`;
+  }).join(' ') : '—';
+  const handSizeRows = adv.byHandSize.map(h =>
+    `<span class="mini-tag">${h.label}: ${h.hits}/${h.tries} (${h.pct}%)</span>`
+  ).join(' ');
+  const halfDelta = adv.secondHalfPts - adv.firstHalfPts;
+  const arc = halfDelta > 2 ? `📈 strong finisher (+${halfDelta})` : (halfDelta < -2 ? `📉 cold finish (${halfDelta})` : '↔️ steady');
 
   wrap.innerHTML = `
     <h3>Per-player breakdown</h3>
@@ -968,13 +985,146 @@ function renderPlayerDetail(game) {
       <div class="stat-card"><div class="stat-label">Best / worst round</div><div class="stat-value">${bestRound >= 0 ? '+' : ''}${bestRound} (R${bestRoundIdx+1}) / ${worstRound >= 0 ? '+' : ''}${worstRound} (R${worstRoundIdx+1})</div></div>
       <div class="stat-card"><div class="stat-label">Longest streaks</div><div class="stat-value">✓${longestHit} / ✗${longestMiss}</div></div>
       <div class="stat-card"><div class="stat-label">Total bid / got</div><div class="stat-value">${totalBid} / ${totalGot}</div></div>
+      <div class="stat-card"><div class="stat-label">Avg pts / round</div><div class="stat-value">${adv.avgPts >= 0 ? '+' : ''}${adv.avgPts.toFixed(2)}</div></div>
+      <div class="stat-card"><div class="stat-label">Consistency (σ)</div><div class="stat-value">±${adv.stdDev.toFixed(2)}</div></div>
+      <div class="stat-card"><div class="stat-label">Bid skew vs fair share</div><div class="stat-value">${adv.bidSkew >= 0 ? '+' : ''}${adv.bidSkew.toFixed(2)}/rd</div></div>
+      <div class="stat-card"><div class="stat-label">Nil bids (0)</div><div class="stat-value">${adv.nil.tries ? `${adv.nil.hits}/${adv.nil.tries} (${Math.round(adv.nil.hits/adv.nil.tries*100)}%)` : '—'}</div></div>
+      <div class="stat-card"><div class="stat-label">Big-hand accuracy</div><div class="stat-value">${adv.bigHand.tries ? `${adv.bigHand.hits}/${adv.bigHand.tries} (${Math.round(adv.bigHand.hits/adv.bigHand.tries*100)}%)` : '—'}</div></div>
+      <div class="stat-card"><div class="stat-label">Dealer-seat record</div><div class="stat-value">${adv.dealer.tries ? `${adv.dealer.hits}/${adv.dealer.tries} (${Math.round(adv.dealer.hits/adv.dealer.tries*100)}%)` : '—'}</div></div>
+      <div class="stat-card"><div class="stat-label">Lead held</div><div class="stat-value">${adv.leadRounds}/${rounds} rounds</div></div>
+      <div class="stat-card"><div class="stat-label">Pts from leader</div><div class="stat-value">${adv.gapToLeader === 0 ? 'Leading 👑' : `−${adv.gapToLeader}`}</div></div>
+      <div class="stat-card"><div class="stat-label">Game arc</div><div class="stat-value">${arc}</div></div>
+      <div class="stat-card wide"><div class="stat-label">By trump</div><div class="stat-value">${trumpRows}</div></div>
+      <div class="stat-card wide"><div class="stat-label">By hand size</div><div class="stat-value">${handSizeRows || '—'}</div></div>
     </div>
+    ${tips.length ? `<div class="player-tips">
+      <h4>💡 Tips for ${escapeHtml(game.players[pi])}</h4>
+      <ul>${tips.map(t => `<li>${t}</li>`).join('')}</ul>
+    </div>` : ''}
     <div class="player-rounds">${pills}</div>
   `;
   wrap.querySelectorAll('.player-tab').forEach(t => t.addEventListener('click', () => {
     game._selectedPlayer = +t.dataset.pi;
     renderPlayerDetail(game);
   }));
+}
+
+function computePlayerAdvanced(game, pi) {
+  const N = game.players.length;
+  const rounds = game.history.length;
+  const deltas = game.history.map(h => h.deltas[pi]);
+  const bids = game.history.map(h => h.bids[pi]);
+  const actuals = game.history.map(h => h.actuals[pi]);
+  const totalPts = deltas.reduce((a, b) => a + b, 0);
+  const avgPts = rounds ? totalPts / rounds : 0;
+  const variance = rounds ? deltas.reduce((a, d) => a + (d - avgPts) ** 2, 0) / rounds : 0;
+  const stdDev = Math.sqrt(variance);
+  // Bid skew vs fair share (cards/N)
+  const skewSum = game.history.reduce((acc, h) => acc + (h.bids[pi] - h.cards / N), 0);
+  const bidSkew = rounds ? skewSum / rounds : 0;
+  // Nil
+  const nil = { tries: 0, hits: 0 };
+  bids.forEach((b, i) => { if (b === 0) { nil.tries++; if (actuals[i] === 0) nil.hits++; } });
+  // Big hand accuracy (cards >= max/2)
+  const maxCards = Math.max(...game.history.map(h => h.cards));
+  const bigHand = { tries: 0, hits: 0 };
+  game.history.forEach((h, ri) => { if (h.cards >= Math.ceil(maxCards / 2)) { bigHand.tries++; if (h.bids[pi] === h.actuals[pi]) bigHand.hits++; } });
+  // Dealer-seat record
+  const dealer = { tries: 0, hits: 0 };
+  game.history.forEach((h, ri) => {
+    const d = ((game.firstDealer || 0) + ri) % N;
+    if (d === pi) { dealer.tries++; if (h.bids[pi] === h.actuals[pi]) dealer.hits++; }
+  });
+  // Lead-held rounds
+  let leadRounds = 0;
+  game.history.forEach(h => {
+    const max = Math.max(...h.totals);
+    if (h.totals[pi] === max) leadRounds++;
+  });
+  // Gap to leader at end
+  const finalTotals = game.history[rounds - 1].totals;
+  const leaderPts = Math.max(...finalTotals);
+  const gapToLeader = leaderPts - finalTotals[pi];
+  // First/second half points
+  const half = Math.floor(rounds / 2);
+  const firstHalfPts = deltas.slice(0, half).reduce((a, b) => a + b, 0);
+  const secondHalfPts = deltas.slice(half).reduce((a, b) => a + b, 0);
+  // By trump
+  const trumpBuckets = {};
+  game.history.forEach((h, ri) => {
+    const key = h.trump || h.trumpSym || '?';
+    if (!trumpBuckets[key]) trumpBuckets[key] = { name: key, tries: 0, hits: 0, pts: 0 };
+    trumpBuckets[key].tries++;
+    trumpBuckets[key].pts += h.deltas[pi];
+    if (h.bids[pi] === h.actuals[pi]) trumpBuckets[key].hits++;
+  });
+  const byTrump = Object.values(trumpBuckets).map(t => ({ ...t, avg: t.pts / t.tries }))
+    .sort((a, b) => b.avg - a.avg);
+  // By hand size buckets: small (<=maxCards/3), mid, big (>=2*maxCards/3)
+  const small = { label: `≤${Math.ceil(maxCards/3)}c`, tries: 0, hits: 0 };
+  const mid = { label: 'mid', tries: 0, hits: 0 };
+  const big = { label: `≥${Math.ceil(2*maxCards/3)}c`, tries: 0, hits: 0 };
+  game.history.forEach(h => {
+    let b;
+    if (h.cards <= Math.ceil(maxCards / 3)) b = small;
+    else if (h.cards >= Math.ceil(2 * maxCards / 3)) b = big;
+    else b = mid;
+    b.tries++;
+    if (h.bids[pi] === h.actuals[pi]) b.hits++;
+  });
+  const byHandSize = [small, mid, big].filter(b => b.tries > 0).map(b => ({ ...b, pct: Math.round(b.hits / b.tries * 100) }));
+  return { totalPts, avgPts, stdDev, bidSkew, nil, bigHand, dealer, leadRounds, gapToLeader, firstHalfPts, secondHalfPts, byTrump, byHandSize, maxCards };
+}
+
+function generatePlayerTips(game, pi, adv) {
+  const tips = [];
+  const rounds = game.history.length;
+  const N = game.players.length;
+  const name = game.players[pi];
+  let over = 0, under = 0, hits = 0;
+  game.history.forEach(h => {
+    const b = h.bids[pi], a = h.actuals[pi];
+    if (b > a) over++; else if (b < a) under++; else hits++;
+  });
+  const accuracy = hits / rounds;
+
+  if (over - under >= 2) tips.push(`🔻 You overbid in ${over} of ${rounds} rounds. Try shaving 1 trick off any borderline bid — missing low usually costs less than missing high.`);
+  else if (under - over >= 2) tips.push(`🔺 You underbid in ${under} of ${rounds} rounds (left points on the table). When you have an A or trump K, bid the extra trick.`);
+
+  if (adv.nil.tries >= 2 && adv.nil.hits / adv.nil.tries < 0.5) tips.push(`🚫 Your nil bids hit ${adv.nil.hits}/${adv.nil.tries}. Before bidding 0, check you have a clear void or only very low cards in trump.`);
+  else if (adv.nil.tries >= 2 && adv.nil.hits / adv.nil.tries === 1) tips.push(`🥇 Your nil bids are perfect (${adv.nil.hits}/${adv.nil.tries}). Keep using 0 as a weapon when your hand is genuinely weak.`);
+
+  if (adv.bigHand.tries >= 2 && adv.bigHand.hits / adv.bigHand.tries < accuracy - 0.1) tips.push(`🎴 You're weaker in big-card rounds (${adv.bigHand.hits}/${adv.bigHand.tries}). With more cards, count expected tricks from aces, trumps, and short suits separately, then add.`);
+
+  if (adv.dealer.tries >= 2 && adv.dealer.hits / adv.dealer.tries < accuracy - 0.15) tips.push(`🎲 Tough in the dealer seat (${adv.dealer.hits}/${adv.dealer.tries}). Remember the dealer is forbidden the one bid that would make totals = cards — plan a +1 or −1 escape bid in advance.`);
+
+  if (adv.byTrump.length >= 2) {
+    const best = adv.byTrump[0];
+    const worst = adv.byTrump[adv.byTrump.length - 1];
+    if (best.tries >= 2 && worst.tries >= 2 && (best.hits / best.tries) - (worst.hits / worst.tries) >= 0.3) {
+      tips.push(`♠️ You read ${best.name} well (${best.hits}/${best.tries}) but struggle on ${worst.name} (${worst.hits}/${worst.tries}). For ${worst.name}, recount sure tricks before bidding.`);
+    }
+  }
+
+  const halfDelta = adv.secondHalfPts - adv.firstHalfPts;
+  if (rounds >= 4 && halfDelta <= -4) tips.push(`📉 You scored ${adv.firstHalfPts} early but only ${adv.secondHalfPts} late. Stamina dip? Slow down on small-hand rounds — they're high-variance.`);
+  else if (rounds >= 4 && halfDelta >= 4) tips.push(`📈 Strong closer: ${adv.firstHalfPts} → ${adv.secondHalfPts}. Lean into bigger bids when leading late if the math allows.`);
+
+  // Streak tip
+  const hitPattern = game.history.map(h => h.bids[pi] === h.actuals[pi]);
+  const lm = longestRun(hitPattern, false);
+  if (lm >= 3) tips.push(`🧊 After ${lm} misses in a row, reset by bidding a safe 1–2 from your best certain tricks rather than chasing a hero round.`);
+
+  if (adv.bidSkew >= 0.5) tips.push(`📈 You bid +${adv.bidSkew.toFixed(2)} above your fair share per round — aggressive. Make sure those extras are coming from actual sure-trick cards, not optimism.`);
+  else if (adv.bidSkew <= -0.5) tips.push(`📉 You bid ${adv.bidSkew.toFixed(2)} below your fair share — conservative. Try bidding what your hand truly suggests; the +3 exact bonus rewards courage.`);
+
+  if (adv.gapToLeader > 0 && rounds > 0) {
+    const ppr = adv.avgPts;
+    tips.push(`🎯 You finished ${adv.gapToLeader} pts behind the leader at avg ${(ppr>=0?'+':'')}${ppr.toFixed(2)} pts/round. To close that gap next game you need ~${(adv.gapToLeader/rounds).toFixed(2)} more pts/round.`);
+  }
+
+  if (!tips.length) tips.push(`✨ Balanced game across the board. Keep doing what you're doing, ${escapeHtml(name)}.`);
+  return tips;
 }
 
 function renderBidNumberStats(game) {
@@ -1143,6 +1293,78 @@ function computeStats(game) {
   if (mostUnder.under > 0) stats.push({ label: 'Most under-bids', value: `${mostUnder.name} (${mostUnder.under}/${rounds})` });
 
   stats.push({ label: 'Rounds played', value: rounds });
+
+  // ---- Extra game-wide stats ----
+  // Consistency leader (lowest std dev)
+  let consist = null;
+  game.players.forEach((p, i) => {
+    const ds = game.history.map(h => h.deltas[i]);
+    const m = ds.reduce((a, b) => a + b, 0) / ds.length;
+    const v = ds.reduce((a, d) => a + (d - m) ** 2, 0) / ds.length;
+    const sd = Math.sqrt(v);
+    if (!consist || sd < consist.sd) consist = { name: p, sd };
+  });
+  if (consist) stats.push({ label: 'Mr. Consistent (lowest σ)', value: `${consist.name} ±${consist.sd.toFixed(2)}` });
+
+  // Risk-taker: highest avg bid vs fair share (cards/N)
+  let risk = { name: '—', skew: -Infinity };
+  game.players.forEach((p, i) => {
+    const s = game.history.reduce((acc, h) => acc + (h.bids[i] - h.cards / N), 0) / rounds;
+    if (s > risk.skew) risk = { name: p, skew: s };
+  });
+  if (risk.skew > 0) stats.push({ label: 'Biggest risk-taker', value: `${risk.name} (+${risk.skew.toFixed(2)} vs fair share)` });
+
+  // Clutch: best accuracy on big-card rounds
+  const maxC = Math.max(...game.history.map(h => h.cards));
+  const bigCutoff = Math.ceil(maxC / 2);
+  const bigRounds = game.history.filter(h => h.cards >= bigCutoff);
+  if (bigRounds.length >= 2) {
+    let clutch = { name: '—', acc: -1, hits: 0, tries: bigRounds.length };
+    game.players.forEach((p, i) => {
+      const h = bigRounds.filter(r => r.bids[i] === r.actuals[i]).length;
+      const acc = h / bigRounds.length;
+      if (acc > clutch.acc) clutch = { name: p, acc, hits: h, tries: bigRounds.length };
+    });
+    stats.push({ label: `Clutch (≥${bigCutoff}-card rounds)`, value: `${clutch.name} ${clutch.hits}/${clutch.tries}` });
+  }
+
+  // Nil-bid specialist
+  let nilBest = null;
+  game.players.forEach((p, i) => {
+    let tries = 0, hits = 0;
+    game.history.forEach(h => { if (h.bids[i] === 0) { tries++; if (h.actuals[i] === 0) hits++; } });
+    if (tries >= 2 && (!nilBest || hits / tries > nilBest.acc)) nilBest = { name: p, hits, tries, acc: hits / tries };
+  });
+  if (nilBest) stats.push({ label: 'Nil-bid specialist', value: `${nilBest.name} ${nilBest.hits}/${nilBest.tries}` });
+
+  // Biggest comeback (largest improvement in rank from mid to end)
+  if (rounds >= 4) {
+    const mid = Math.floor(rounds / 2);
+    const midTotals = game.history[mid - 1].totals;
+    const endTotals = game.history[rounds - 1].totals;
+    const rankAt = (totals, i) => [...totals.keys()].sort((a, b) => totals[b] - totals[a]).indexOf(i) + 1;
+    let comeback = { name: '—', gain: 0 };
+    game.players.forEach((p, i) => {
+      const gain = rankAt(midTotals, i) - rankAt(endTotals, i);
+      if (gain > comeback.gain) comeback = { name: p, gain };
+    });
+    if (comeback.gain > 0) stats.push({ label: 'Biggest comeback', value: `${comeback.name} (+${comeback.gain} places)` });
+  }
+
+  // Strongest trump for the field
+  const trumpAcc = {};
+  game.history.forEach(h => {
+    const k = h.trump || h.trumpSym || '?';
+    if (!trumpAcc[k]) trumpAcc[k] = { tries: 0, hits: 0 };
+    h.bids.forEach((b, i) => { trumpAcc[k].tries++; if (b === h.actuals[i]) trumpAcc[k].hits++; });
+  });
+  const trumpEntries = Object.entries(trumpAcc).filter(([, v]) => v.tries >= N).map(([k, v]) => ({ name: k, pct: v.hits / v.tries }));
+  if (trumpEntries.length >= 2) {
+    trumpEntries.sort((a, b) => b.pct - a.pct);
+    stats.push({ label: 'Easiest trump', value: `${trumpEntries[0].name} (${Math.round(trumpEntries[0].pct*100)}%)` });
+    stats.push({ label: 'Hardest trump', value: `${trumpEntries[trumpEntries.length-1].name} (${Math.round(trumpEntries[trumpEntries.length-1].pct*100)}%)` });
+  }
+
   return stats;
 }
 
