@@ -272,3 +272,12 @@ small { color: var(--muted); font-size: .75rem; }
   display: inline-block; margin-top: .15rem; font-size: .7rem; color: var(--muted);
   background: rgba(255,255,255,.04); padding: 1px 6px; border-radius: 999px;
 }
+
+/* Share link popup */
+.share-link-popup { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; z-index: 200; align-items: center; justify-content: center; padding: 1rem; }
+.share-link-popup.show { display: flex; }
+.share-link-popup-inner { background: var(--card, #1c232c); border: 1px solid var(--border, #2a323d); border-radius: 12px; padding: 1rem; max-width: 480px; width: 100%; box-shadow: 0 10px 40px rgba(0,0,0,.6); }
+.share-link-popup-label { color: var(--muted, #8a93a0); font-size: .85rem; margin-bottom: .5rem; }
+.share-link-popup input { width: 100%; padding: .55rem .6rem; font-size: .95rem; background: var(--card-2, #232c37); color: var(--text, #e8eaed); border: 1px solid var(--border, #2a323d); border-radius: 6px; margin-bottom: .7rem; box-sizing: border-box; }
+.share-link-popup-actions { display: flex; gap: .4rem; flex-wrap: wrap; }
+.share-link-popup-actions button, .share-link-popup-actions a { flex: 1; min-width: 70px; text-align: center; padding: .6rem .8rem; border-radius: 6px; text-decoration: none; }

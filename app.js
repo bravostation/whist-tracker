@@ -878,7 +878,10 @@ function renderFullGameTable(game) {
   header += '</tr>';
   let html = '<thead>' + header + '</thead><tbody>';
   game.history.forEach((r, ri) => {
-    const tr = SUITS.find(s => s.name === r.trump);
+    const tr = SUITS.find(s => s.name === r.trump)
+      || SUITS.find(s => s.sym === r.trumpSym)
+      || SUITS.find(s => s.sym === r.trump)
+      || { sym: r.trumpSym || r.trump || '?', cls: 'suit-nt', name: r.trump || '?' };
     const dealer = ((game.firstDealer || 0) + ri) % N;
     const bidSum = r.bids.reduce((a, b) => a + b, 0);
     const diff = bidSum - r.cards;
@@ -1147,7 +1150,11 @@ function computeStats(game) {
 async function copyShareLink() {
   const url = buildShareUrl();
   if (!url) return;
-  await writeClip(url, '✓ Link copied!');
+  let copied = false;
+  try { await navigator.clipboard.writeText(url); copied = true; } catch {}
+  showShareLinkPopup(url, copied ? '✓ Link copied — also shown here:' : 'Copy this link:');
+  const status = $('share-status');
+  if (status) { status.textContent = copied ? '✓ Link copied!' : 'Link shown above'; setTimeout(() => { status.textContent = ''; }, 6000); }
 }
 
 async function copyShortShareLink() {
@@ -1155,13 +1162,61 @@ async function copyShortShareLink() {
   if (!url) return;
   const status = $('share-status');
   if (status) status.textContent = 'Shortening…';
+  // iOS Safari workaround: stash a promise into the clipboard inside the user-
+  // activation window so writeText after await doesn't get silently rejected.
+  let clipboardWritten = false;
   try {
-    const short = await shortenUrl(url);
-    await writeClip(short, '✓ Short link copied: ' + short);
-  } catch (e) {
-    if (status) status.textContent = '⚠️ Shortener failed, copied full link';
-    await writeClip(url, '');
+    if (navigator.clipboard && typeof ClipboardItem !== 'undefined' && navigator.clipboard.write) {
+      const itemPromise = shortenUrl(url).then(s => new Blob([s], { type: 'text/plain' }));
+      const item = new ClipboardItem({ 'text/plain': itemPromise });
+      await navigator.clipboard.write([item]);
+      clipboardWritten = true;
+    }
+  } catch {}
+  let short;
+  try { short = await shortenUrl(url); }
+  catch (e) {
+    if (status) status.textContent = '⚠️ Shortener failed';
+    showShareLinkPopup(url, 'Shortener unavailable — copy this full link:');
+    return;
   }
+  if (!clipboardWritten) {
+    try { await navigator.clipboard.writeText(short); clipboardWritten = true; } catch {}
+  }
+  // Always surface the short link onscreen so it's copy-able even if clipboard failed.
+  showShareLinkPopup(short, clipboardWritten ? '✓ Short link copied — also shown here:' : 'Copy this short link:');
+  if (status) {
+    status.textContent = clipboardWritten ? ('✓ Short link copied: ' + short) : ('Short link: ' + short);
+    setTimeout(() => { if (status) status.textContent = ''; }, 8000);
+  }
+}
+
+function showShareLinkPopup(url, label) {
+  let pop = document.getElementById('share-link-popup');
+  if (!pop) {
+    pop = document.createElement('div');
+    pop.id = 'share-link-popup';
+    pop.className = 'share-link-popup';
+    document.body.appendChild(pop);
+  }
+  pop.innerHTML = `
+    <div class="share-link-popup-inner">
+      <div class="share-link-popup-label">${escapeHtml(label)}</div>
+      <input type="text" readonly value="${escapeHtml(url)}" />
+      <div class="share-link-popup-actions">
+        <button type="button" class="primary" data-act="copy">Copy</button>
+        <a class="secondary" href="${escapeHtml(url)}" target="_blank" rel="noopener">Open</a>
+        <button type="button" class="secondary" data-act="close">Close</button>
+      </div>
+    </div>`;
+  pop.classList.add('show');
+  const inp = pop.querySelector('input');
+  setTimeout(() => { try { inp.focus(); inp.select(); } catch {} }, 30);
+  pop.querySelector('[data-act="copy"]').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(url); pop.querySelector('[data-act="copy"]').textContent = '✓ Copied'; }
+    catch { try { inp.select(); document.execCommand('copy'); pop.querySelector('[data-act="copy"]').textContent = '✓ Copied'; } catch {} }
+  });
+  pop.querySelector('[data-act="close"]').addEventListener('click', () => pop.classList.remove('show'));
 }
 
 async function shortenUrl(longUrl) {
