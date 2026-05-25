@@ -14,6 +14,7 @@ const SUITS = [
 
 const STORAGE_KEY = 'whist_history_v1';
 const ACTIVE_KEY = 'whist_active_v2';
+const KNOWN_PLAYERS_KEY = 'whist_known_players_v1';
 const STORE = window.localStorage;
 // Migrate any old sessionStorage data on first load
 (function migrate() {
@@ -40,12 +41,23 @@ function maxCardsFor(players) { return Math.floor(52 / players); }
 function renderPlayerNames() {
   const n = parseInt($('setup-players').value, 10) || 4;
   const wrap = $('setup-names');
+  // Preserve any names the user already typed when resizing
+  const existing = [];
+  wrap.querySelectorAll('input').forEach(inp => existing.push((inp.value || '').trim()));
   wrap.innerHTML = '';
+  const kp = loadKnownPlayers();
+  const lastRoster = (kp.rosters || []).find(r => r.players.length === n);
   for (let i = 0; i < n; i++) {
     const lbl = document.createElement('label');
-    lbl.innerHTML = `Seat ${i + 1} <input type="text" data-player="${i}" value="Player ${i + 1}" />`;
+    let preset = existing[i];
+    if (!preset || /^Player \d+$/.test(preset)) {
+      preset = (lastRoster && lastRoster.players[i]) || `Player ${i + 1}`;
+    }
+    lbl.innerHTML = `Seat ${i + 1} <input type="text" data-player="${i}" value="${escapeHtml(preset)}" />`;
     wrap.appendChild(lbl);
-    lbl.querySelector('input').addEventListener('input', renderStarterButtons);
+    const inp = lbl.querySelector('input');
+    inp.addEventListener('focus', () => { try { inp.select(); } catch {} });
+    inp.addEventListener('input', renderStarterButtons);
   }
   const maxC = maxCardsFor(n);
   const startInp = $('setup-start');
@@ -54,6 +66,85 @@ function renderPlayerNames() {
   $('setup-max-note').textContent = `Max for ${n} players: ${maxC}`;
   if (setupSelectedStarter !== 'random' && setupSelectedStarter >= n) setupSelectedStarter = 'random';
   renderStarterButtons();
+  renderAutofillChips();
+}
+
+// -------- Known players autofill --------
+function loadKnownPlayers() {
+  try { return JSON.parse(STORE.getItem(KNOWN_PLAYERS_KEY) || '{"rosters":[],"names":{}}'); }
+  catch { return { rosters: [], names: {} }; }
+}
+
+function rememberRoster(players) {
+  const kp = loadKnownPlayers();
+  const now = Date.now();
+  const sig = players.join('|');
+  kp.rosters = (kp.rosters || []).filter(r => r.players.join('|') !== sig);
+  kp.rosters.unshift({ players: [...players], lastUsed: now });
+  kp.rosters = kp.rosters.slice(0, 12);
+  kp.names = kp.names || {};
+  for (const n of players) {
+    if (!n) continue;
+    const e = kp.names[n] || { count: 0, lastUsed: 0 };
+    e.count += 1;
+    e.lastUsed = now;
+    kp.names[n] = e;
+  }
+  try { STORE.setItem(KNOWN_PLAYERS_KEY, JSON.stringify(kp)); } catch {}
+}
+
+function renderAutofillChips() {
+  const wrap = $('autofill-chips');
+  if (!wrap) return;
+  const kp = loadKnownPlayers();
+  const N = parseInt($('setup-players').value, 10) || 4;
+  const rosters = (kp.rosters || []).filter(r => r.players.length === N).slice(0, 3);
+  const recentNames = Object.entries(kp.names || {})
+    .sort((a, b) => (b[1].lastUsed || 0) - (a[1].lastUsed || 0))
+    .slice(0, 14)
+    .map(([name]) => name);
+
+  if (!rosters.length && !recentNames.length) { wrap.innerHTML = ''; return; }
+
+  let html = '';
+  if (rosters.length) {
+    html += '<div class="autofill-hint">Recent rosters:</div>';
+    rosters.forEach((r, i) => {
+      html += `<button type="button" class="autofill-roster" data-roster="${i}">${i === 0 ? '⭐ ' : ''}${r.players.map(escapeHtml).join(' · ')}</button>`;
+    });
+  }
+  if (recentNames.length) {
+    html += '<div class="autofill-hint">Tap a name to fill the next seat:</div><div class="autofill-row">' +
+      recentNames.map(n => `<button type="button" class="autofill-chip" data-name="${escapeHtml(n)}">${escapeHtml(n)}</button>`).join('') + '</div>';
+  }
+  wrap.innerHTML = html;
+
+  wrap.querySelectorAll('.autofill-roster').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const r = rosters[+btn.dataset.roster];
+      if (!r) return;
+      document.querySelectorAll('#setup-names input').forEach((inp, i) => {
+        inp.value = r.players[i] || `Player ${i + 1}`;
+      });
+      renderStarterButtons();
+    });
+  });
+  wrap.querySelectorAll('.autofill-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const name = btn.dataset.name;
+      const inputs = document.querySelectorAll('#setup-names input');
+      let target = null;
+      for (const inp of inputs) {
+        const v = (inp.value || '').trim();
+        if (!v || /^Player \d+$/.test(v)) { target = inp; break; }
+      }
+      if (!target) target = inputs[inputs.length - 1];
+      if (target) {
+        target.value = name;
+        renderStarterButtons();
+      }
+    });
+  });
 }
 
 function getSetupNames() {
@@ -101,6 +192,7 @@ function startGame() {
   if (firstDealer === 'random') firstDealer = Math.floor(Math.random() * players.length);
 
   const now = Date.now();
+  rememberRoster(players);
   state = {
     id: now,
     startedAt: new Date(now).toISOString(),
@@ -179,10 +271,12 @@ function renderGame() {
     const diff = bidSum - r.cards;
     const diffCls = diff > 0 ? 'over' : (diff < 0 ? 'under' : '');
     const diffStr = diff === 0 ? '=cards' : (diff > 0 ? `+${diff}` : `${diff}`);
+    const durStr = r.durationMs ? `<span class="round-time" title="Time bids→scored">⏱${formatDuration(r.durationMs)}</span>` : '';
     html += `<tr><td class="round-cell">
       <div><span class="cards-num">${r.cards}</span><span class="trump-sym ${rTrump.cls}">${rTrump.sym}</span></div>
       <small>R${ri + 1}</small>
       <span class="round-bidsum ${diffCls}">bids ${bidSum} (${diffStr})</span>
+      ${durStr}
     </td>`;
     state.players.forEach((p, pi) => {
       const ok = r.bids[pi] === r.actuals[pi];
@@ -475,8 +569,12 @@ function commitRound() {
 }
 
 function undoLastRound() {
+  // Close any open quick-entry modal so its cached order/step can't desync
+  if (modalCtx) { $('modal-backdrop').classList.add('hidden'); modalCtx = null; }
   if (state.phase === 'playing') {
     state.phase = 'bidding';
+    // Clear actuals so re-entering bids doesn't carry stale trick counts forward
+    state.pendingActuals = state.players.map(() => null);
     saveActive();
     renderGame();
     return;
@@ -486,8 +584,12 @@ function undoLastRound() {
   const last = state.history.pop();
   state.roundDurations.pop();
   state.currentRound -= 1;
+  // Restore the bids exactly as they were (indexed by seat — dealer order is
+  // re-derived from currentRound so seat indices stay aligned).
   state.pendingBids = [...last.bids];
-  state.pendingActuals = [...last.actuals];
+  // Always reset actuals on undo — the previous actuals belonged to a now-popped
+  // round; keeping them caused a stale dealer/order pre-fill on re-entry.
+  state.pendingActuals = state.players.map(() => null);
   state.phase = 'bidding';
   state.roundStartedAt = Date.now();
   saveActive();
@@ -672,6 +774,7 @@ function modalBack() {
 function finishGame() {
   stopTimer();
   const finished = { ...state, finishedAt: new Date().toISOString() };
+  try { rememberRoster(finished.players); } catch {}
   const list = loadHistory();
   list.unshift(finished);
   STORE.setItem(STORAGE_KEY, JSON.stringify(list));
@@ -781,10 +884,12 @@ function renderFullGameTable(game) {
     const diff = bidSum - r.cards;
     const diffCls = diff > 0 ? 'over' : (diff < 0 ? 'under' : '');
     const diffStr = diff === 0 ? '=cards' : (diff > 0 ? `+${diff}` : `${diff}`);
+    const durStr = r.durationMs ? `<span class="round-time" title="Time bids→scored">⏱${formatDuration(r.durationMs)}</span>` : '';
     html += `<tr><td class="round-cell">
       <div><span class="cards-num">${r.cards}</span><span class="trump-sym ${tr.cls}">${tr.sym}</span></div>
       <small>R${ri + 1}</small>
       <span class="round-bidsum ${diffCls}">bids ${bidSum} (${diffStr})</span>
+      ${durStr}
     </td>`;
     game.players.forEach((p, pi) => {
       const ok = r.bids[pi] === r.actuals[pi];

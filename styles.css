@@ -255,3 +255,20 @@ small { color: var(--muted); font-size: .75rem; }
   .cell-stack { min-height: 48px; }
   .modal-pad button { padding: .7rem .1rem; font-size: 1rem; }
 }
+
+/* Autofill chips */
+.autofill-chips { display: flex; flex-direction: column; gap: .4rem; margin: .6rem 0 1rem; }
+.autofill-hint { color: var(--muted); font-size: .8rem; }
+.autofill-row { display: flex; flex-wrap: wrap; gap: .35rem; }
+.autofill-chip, .autofill-roster {
+  background: var(--card-2); color: var(--text); border: 1px solid var(--border, #2a323d);
+  border-radius: 999px; padding: .3rem .7rem; font-size: .85rem; cursor: pointer;
+}
+.autofill-roster { border-radius: 8px; text-align: left; }
+.autofill-chip:hover, .autofill-roster:hover { background: var(--accent-2, #3a4658); }
+
+/* Round time chip on round-cell */
+.round-time {
+  display: inline-block; margin-top: .15rem; font-size: .7rem; color: var(--muted);
+  background: rgba(255,255,255,.04); padding: 1px 6px; border-radius: 999px;
+}
