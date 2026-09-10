@@ -830,7 +830,7 @@ function renderSummary(game) {
   const sb = $('stats-block');
   sb.innerHTML = '';
   stats.forEach(s => {
-    sb.innerHTML += `<div class="stat-card"><div class="stat-label">${s.label}</div><div class="stat-value">${s.value}</div></div>`;
+    sb.innerHTML += `<div class="stat-card"><div class="stat-label">${escapeHtml(s.label)}</div><div class="stat-value">${escapeHtml(s.value)}</div></div>`;
   });
 
   const ft = $('final-table');
