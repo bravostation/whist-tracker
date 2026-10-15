@@ -24,6 +24,39 @@ header { display: flex; justify-content: space-between; align-items: center; mar
 h1 { margin: 0; font-size: 1.5rem; }
 nav { display: flex; gap: .5rem; }
 
+/* Progressive enhancement only: keep the original light title on SDR.
+   The JPEG contains a real 1–1.5x HDR gain map, not an SDR glow. */
+@media screen and (dynamic-range: high) and (prefers-color-scheme: dark) and (forced-colors: none) {
+  @supports ((background-clip: text) or (-webkit-background-clip: text)) {
+    .title-accent {
+      display: inline-block;
+      padding: .08em .04em;
+      margin: -.08em -.04em;
+      background-color: var(--text); /* Readable if the image cannot load. */
+      background-image: url("assets/title-white-hdr.jpg");
+      background-size: 100% 100%;
+      background-clip: text;
+      -webkit-background-clip: text;
+      color: transparent;
+      -webkit-text-fill-color: transparent;
+    }
+    .title-accent::selection {
+      background: Highlight;
+      color: HighlightText;
+      -webkit-text-fill-color: HighlightText;
+    }
+  }
+}
+
+/* Printing must never depend on a background image or background printing. */
+@media print {
+  .title-accent {
+    background: none;
+    color: inherit;
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
 button {
   cursor: pointer; border: none; padding: .6rem 1rem; border-radius: .5rem;
   background: var(--card-2); color: var(--text); font-size: .95rem; font-weight: 500;
